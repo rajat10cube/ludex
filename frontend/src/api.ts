@@ -81,6 +81,25 @@ export interface ArtworkStatus {
   enabled: boolean;
 }
 
+export interface ArtworkFieldState {
+  set: boolean;
+  source: "saved" | "env" | null;
+  hint: string | null;
+}
+
+export interface ArtworkSettings extends ArtworkStatus {
+  steamgriddb_key: ArtworkFieldState;
+  igdb_client_id: ArtworkFieldState;
+  igdb_client_secret: ArtworkFieldState;
+}
+
+export interface ArtworkKeysIn {
+  steamgriddb_key?: string;
+  igdb_client_id?: string;
+  igdb_client_secret?: string;
+  clear?: string[];
+}
+
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: (() => void) | null): void {
   onUnauthorized = fn;
@@ -154,3 +173,6 @@ export const triggerScan = () => post<{ status: string }>("/libraries/scan");
 export const getScanStatus = () => req<ScanStatus>("/libraries/scan/status");
 export const getArtworkStatus = () => req<ArtworkStatus>("/libraries/artwork/status");
 export const refreshArtwork = () => post<{ status: string }>("/libraries/artwork/refresh");
+export const getArtworkSettings = () => req<ArtworkSettings>("/settings/artwork");
+export const saveArtworkKeys = (body: ArtworkKeysIn) =>
+  post<ArtworkSettings>("/settings/artwork", body);

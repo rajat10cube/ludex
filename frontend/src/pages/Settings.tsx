@@ -18,11 +18,14 @@ import {
   browse,
   changeMyPassword,
   deleteLibrary,
-  getArtworkStatus,
+  getArtworkSettings,
   getLibraries,
   getScanStatus,
   refreshArtwork,
+  saveArtworkKeys,
   triggerScan,
+  type ArtworkFieldState,
+  type ArtworkKeysIn,
   type BrowseResult,
 } from "@/api";
 import { useAuth } from "@/auth";
@@ -40,10 +43,71 @@ export function Settings() {
   );
 }
 
+function KeyField({
+  label,
+  help,
+  state,
+  value,
+  onChange,
+}: {
+  label: string;
+  help: React.ReactNode;
+  state?: ArtworkFieldState;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const placeholder = state?.set
+    ? `${state.hint ?? "set"} — saved (${state.source}), leave blank to keep`
+    : "not set — paste key";
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <label className="text-xs font-medium text-slate-300">{label}</label>
+        {state?.set && (
+          <span className="chip border-play/40 bg-play/15 px-2 py-0.5 text-[10px] text-play">
+            {state.source === "env" ? "from env" : "saved"}
+          </span>
+        )}
+      </div>
+      <input
+        className="input font-mono text-xs"
+        type="password"
+        autoComplete="off"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p className="mt-1 text-[11px] text-slate-500">{help}</p>
+    </div>
+  );
+}
+
 function ArtworkSection() {
-  const { data: status } = useQuery({ queryKey: ["artwork-status"], queryFn: getArtworkStatus });
+  const { data: settings } = useQuery({ queryKey: ["artwork-settings"], queryFn: getArtworkSettings });
   const qc = useQueryClient();
   const [msg, setMsg] = useState<string | null>(null);
+  const [sgdb, setSgdb] = useState("");
+  const [igdbId, setIgdbId] = useState("");
+  const [igdbSecret, setIgdbSecret] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => {
+      const body: ArtworkKeysIn = {};
+      if (sgdb.trim()) body.steamgriddb_key = sgdb.trim();
+      if (igdbId.trim()) body.igdb_client_id = igdbId.trim();
+      if (igdbSecret.trim()) body.igdb_client_secret = igdbSecret.trim();
+      return saveArtworkKeys(body);
+    },
+    onSuccess: () => {
+      setMsg("Keys saved. Click “Refresh artwork” to fetch covers now.");
+      setSgdb("");
+      setIgdbId("");
+      setIgdbSecret("");
+      qc.invalidateQueries({ queryKey: ["artwork-settings"] });
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : "Failed"),
+  });
+
   const refresh = useMutation({
     mutationFn: refreshArtwork,
     onSuccess: () => {
@@ -53,7 +117,8 @@ function ArtworkSection() {
     onError: (e) => setMsg(e instanceof Error ? e.message : "Failed"),
   });
 
-  const enabled = status?.enabled ?? false;
+  const enabled = settings?.enabled ?? false;
+  const nothingTyped = !sgdb.trim() && !igdbId.trim() && !igdbSecret.trim();
 
   return (
     <Section
@@ -64,6 +129,7 @@ function ArtworkSection() {
           className="btn-ghost h-9"
           onClick={() => refresh.mutate()}
           disabled={!enabled || refresh.isPending}
+          title={enabled ? "Fetch covers + metadata now" : "Add a key first"}
         >
           <RefreshCw className={cn("h-4 w-4", refresh.isPending && "animate-spin")} />
           Refresh artwork
@@ -71,35 +137,80 @@ function ArtworkSection() {
       }
     >
       <p className="text-sm text-slate-400">
-        Ludex fetches cover art from <span className="text-slate-200">SteamGridDB</span> and
-        descriptions/genres from <span className="text-slate-200">IGDB</span> - like a TVDB key in
-        Jellyfin. Add keys as environment variables, then Refresh:
+        Paste your keys here to fetch cover art (SteamGridDB) and descriptions/genres (IGDB) — like
+        a TVDB key in Jellyfin. Saved keys take effect immediately, no restart.
       </p>
-      <ul className="mt-3 space-y-1 text-xs text-slate-500">
-        <li>
-          <code className="text-accent">LUDEX_STEAMGRIDDB_KEY</code> - free key from your
-          SteamGridDB profile (covers).
-        </li>
-        <li>
-          <code className="text-accent">LUDEX_IGDB_CLIENT_ID</code> +{" "}
-          <code className="text-accent">LUDEX_IGDB_CLIENT_SECRET</code> - free Twitch dev app
-          (metadata).
-        </li>
-      </ul>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs">
-        <span className={cn("chip", status?.steamgriddb && "border-play/40 bg-play/15 text-play")}>
-          SteamGridDB {status?.steamgriddb ? "connected" : "off"}
+
+      <div className="mt-4 space-y-3">
+        <KeyField
+          label="SteamGridDB API key"
+          state={settings?.steamgriddb_key}
+          value={sgdb}
+          onChange={setSgdb}
+          help={
+            <>
+              Free from{" "}
+              <a
+                className="text-accent hover:underline"
+                href="https://www.steamgriddb.com/profile/preferences/api"
+                target="_blank"
+                rel="noreferrer"
+              >
+                steamgriddb.com → preferences → API
+              </a>{" "}
+              — gives the portrait cover art.
+            </>
+          }
+        />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <KeyField
+            label="IGDB Client ID"
+            state={settings?.igdb_client_id}
+            value={igdbId}
+            onChange={setIgdbId}
+            help={
+              <>
+                Twitch app at{" "}
+                <a
+                  className="text-accent hover:underline"
+                  href="https://dev.twitch.tv/console/apps"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  dev.twitch.tv
+                </a>{" "}
+                — gives descriptions/genres.
+              </>
+            }
+          />
+          <KeyField
+            label="IGDB Client Secret"
+            state={settings?.igdb_client_secret}
+            value={igdbSecret}
+            onChange={setIgdbSecret}
+            help="From the same Twitch app (Client Secret)."
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button className="btn-primary" onClick={() => save.mutate()} disabled={nothingTyped || save.isPending}>
+          {save.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+          Save keys
+        </button>
+        <span className={cn("chip", settings?.steamgriddb && "border-play/40 bg-play/15 text-play")}>
+          SteamGridDB {settings?.steamgriddb ? "connected" : "off"}
         </span>
-        <span className={cn("chip", status?.igdb && "border-play/40 bg-play/15 text-play")}>
-          IGDB {status?.igdb ? "connected" : "off"}
+        <span className={cn("chip", settings?.igdb && "border-play/40 bg-play/15 text-play")}>
+          IGDB {settings?.igdb ? "connected" : "off"}
         </span>
       </div>
+
       {msg && <p className="mt-2 text-xs text-slate-400">{msg}</p>}
-      {!enabled && (
-        <p className="mt-2 text-xs text-slate-500">
-          Set at least one key and restart the server to enable fetching.
-        </p>
-      )}
+      <p className="mt-2 text-[11px] text-slate-500">
+        Keys are stored in the server's data dir. Env vars ({" "}
+        <code>LUDEX_STEAMGRIDDB_KEY</code> etc.) still work as a fallback.
+      </p>
     </Section>
   );
 }

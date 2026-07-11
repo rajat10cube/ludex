@@ -140,10 +140,17 @@ class ArtworkService:
         s = settings or get_settings()
         self.timeout = s.artwork_timeout
         self.cache = s.artwork_dir()
-        self.sgdb = SteamGridDB(s.steamgriddb_key, self.timeout) if s.steamgriddb_key else None
+        # UI-saved keys take precedence over environment variables.
+        from . import settings_store
+
+        sgdb_key = settings_store.get("steamgriddb_key") or s.steamgriddb_key
+        igdb_id = settings_store.get("igdb_client_id") or s.igdb_client_id
+        igdb_secret = settings_store.get("igdb_client_secret") or s.igdb_client_secret
+
+        self.sgdb = SteamGridDB(sgdb_key, self.timeout) if sgdb_key else None
         self.igdb = (
-            IGDB(s.igdb_client_id, s.igdb_client_secret, self.timeout)
-            if (s.igdb_client_id and s.igdb_client_secret) else None
+            IGDB(igdb_id, igdb_secret, self.timeout)
+            if (igdb_id and igdb_secret) else None
         )
 
     def enabled(self) -> bool:

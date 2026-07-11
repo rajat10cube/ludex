@@ -15,6 +15,7 @@ from . import __version__
 from .config import get_settings
 from .db import init_db
 from .routers import agent, auth, client, download, games, health, libraries
+from .routers import settings as settings_router
 
 settings = get_settings()
 
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(download.router, prefix="/api")
     app.include_router(agent.router, prefix="/api")
     app.include_router(client.router, prefix="/api")
+    app.include_router(settings_router.router, prefix="/api")
 
     # Serve the built SPA in production (single container). In dev, Vite serves it.
     # A catch-all returns index.html for client routes so a hard refresh on

@@ -127,17 +127,17 @@ Torrent folders rarely ship cover art, so Ludex can pull it online — the same 
 as a TVDB key in Jellyfin. It's **opt-in**; with no keys set it just uses a local
 `cover.jpg` if the folder has one.
 
-- **SteamGridDB** → portrait cover art for the grid. Get a free key from your
-  [profile → preferences → API](https://www.steamgriddb.com/profile/preferences/api)
-  and set `LUDEX_STEAMGRIDDB_KEY`.
+- **SteamGridDB** → portrait cover art for the grid. Free key from your
+  [profile → preferences → API](https://www.steamgriddb.com/profile/preferences/api).
 - **IGDB** (Twitch) → description, genres, release year, rating (and a cover as a
-  fallback). Create a free app at [dev.twitch.tv](https://dev.twitch.tv/console/apps)
-  and set `LUDEX_IGDB_CLIENT_ID` + `LUDEX_IGDB_CLIENT_SECRET`.
+  fallback). Free app at [dev.twitch.tv](https://dev.twitch.tv/console/apps).
 
-Covers are matched by the scanner's cleaned title, downloaded once, and cached in
-the data dir. Fetching runs automatically on scan; **Settings → Game artwork** has
-a **Refresh artwork** button to (re)pull for the whole library. A local `cover.jpg`
-always wins as a manual override.
+**Add the keys right in the app** under **Settings → Game artwork** — they're saved
+in the server's data dir and take effect immediately (no restart). The env vars
+`LUDEX_STEAMGRIDDB_KEY` / `LUDEX_IGDB_CLIENT_ID` / `LUDEX_IGDB_CLIENT_SECRET` still
+work as a fallback. Covers are matched by the scanner's cleaned title, downloaded
+once, and cached; fetching runs on scan, and there's a **Refresh artwork** button
+to (re)pull the whole library. A local `cover.jpg` always wins as a manual override.
 
 ## Accounts
 On first launch Ludex shows a **one-time signup** to create your **master admin**
