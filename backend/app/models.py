@@ -61,7 +61,10 @@ class Game(Base):
     slug: Mapped[str] = mapped_column(String, unique=True, index=True)
     title: Mapped[str] = mapped_column(String)
     version: Mapped[str | None] = mapped_column(String, nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)  # IGDB summary
+    genres: Mapped[str | None] = mapped_column(String, nullable=True)      # comma-separated
+    release_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)     # 0-100 (IGDB)
     kind: Mapped[str] = mapped_column(String)  # folder|installer|archive
     setup_type: Mapped[str] = mapped_column(String, default="portable")
     requires_hypervisor: Mapped[bool] = mapped_column(Boolean, default=False)

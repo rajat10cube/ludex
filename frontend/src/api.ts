@@ -20,6 +20,9 @@ export interface GameCard {
   sizeBytes: number;
   fileCount: number;
   hasCover: boolean;
+  genres: string | null;
+  releaseYear: number | null;
+  rating: number | null;
   missing: boolean;
   libraryId: number | null;
   downloadKind: "tar" | "file";
@@ -68,7 +71,14 @@ export interface ScanStatus {
   started_at: string | null;
   finished_at: string | null;
   games: number;
+  artwork?: number;
   errors: string[];
+}
+
+export interface ArtworkStatus {
+  steamgriddb: boolean;
+  igdb: boolean;
+  enabled: boolean;
 }
 
 let onUnauthorized: (() => void) | null = null;
@@ -142,3 +152,5 @@ export const deleteLibrary = (id: number) =>
   req<void>(`/libraries/${id}`, { method: "DELETE" });
 export const triggerScan = () => post<{ status: string }>("/libraries/scan");
 export const getScanStatus = () => req<ScanStatus>("/libraries/scan/status");
+export const getArtworkStatus = () => req<ArtworkStatus>("/libraries/artwork/status");
+export const refreshArtwork = () => post<{ status: string }>("/libraries/artwork/refresh");

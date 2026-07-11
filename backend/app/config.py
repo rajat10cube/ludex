@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     exe_search_depth: int = 3            # how deep to look for a game's main .exe
     compute_sizes: bool = True           # sum folder sizes during scan (slower on huge libs)
 
+    # --- artwork / metadata (opt-in; like configuring a TVDB key in Jellyfin) ---
+    # SteamGridDB gives the portrait cover art; IGDB gives description/genres/etc.
+    # Leave empty to disable (scanner then only uses a local cover.jpg if present).
+    steamgriddb_key: str = ""            # https://www.steamgriddb.com/profile/preferences/api
+    igdb_client_id: str = ""             # https://dev.twitch.tv/console/apps
+    igdb_client_secret: str = ""
+    artwork_timeout: int = 15            # per-request HTTP timeout (seconds)
+
     # --- auth ---
     auth: str = "basic"                  # none|basic (basic = require login)
     auth_user: str = "admin"
@@ -82,6 +90,12 @@ class Settings(BaseSettings):
         if self.games_dir:
             return [LibraryConfig(path=self.games_dir)]
         return []
+
+    def artwork_dir(self) -> Path:
+        """Cache dir for downloaded covers + fetch markers."""
+        d = self.data_dir / "artwork"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     def client_scripts_dir(self) -> Path:
         """Where the Windows agent scripts live (repo `client/windows`)."""

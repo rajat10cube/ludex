@@ -6,6 +6,7 @@ import {
   Loader2,
   Play,
   ShieldAlert,
+  Star,
   Trash2,
   X,
 } from "lucide-react";
@@ -70,14 +71,34 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
               <div className="min-w-0 flex-1">
                 <h2 className="text-xl font-semibold text-white">{game.title}</h2>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
-                  {game.version && <span>v{game.version}</span>}
+                  {game.releaseYear && <span>{game.releaseYear}</span>}
+                  {game.rating != null && (
+                    <span className="inline-flex items-center gap-1 text-amber-300">
+                      <Star className="h-3 w-3 fill-current" /> {game.rating}
+                    </span>
+                  )}
+                  {game.version && <span>· v{game.version}</span>}
                   {game.releaseGroup && <span>· {game.releaseGroup}</span>}
                   <span>· {formatBytes(game.sizeBytes)}</span>
                   <span>· {formatPlaytime(game.playtimeSeconds)}</span>
                   {game.lastPlayed && <span>· last played {relativeTime(game.lastPlayed)}</span>}
                 </div>
 
-                <p className="mt-3 text-sm text-slate-300">{SETUP_HELP[game.setupType]}</p>
+                {game.genres && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {game.genres.split(",").map((g) => (
+                      <span key={g} className="chip">
+                        {g.trim()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {game.description && (
+                  <p className="mt-3 text-sm leading-relaxed text-slate-300">{game.description}</p>
+                )}
+
+                <p className="mt-3 text-sm text-slate-400">{SETUP_HELP[game.setupType]}</p>
 
                 {game.requiresHypervisor && (
                   <div className="mt-3 flex gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">

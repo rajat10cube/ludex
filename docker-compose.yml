@@ -19,6 +19,10 @@ services:
       LUDEX_AUTH_USER: admin
       LUDEX_AUTH_PASS: change-me
       LUDEX_DEV_CORS: "false"
+      # Artwork/metadata (optional). SteamGridDB = covers, IGDB = descriptions.
+      # LUDEX_STEAMGRIDDB_KEY: your-steamgriddb-key
+      # LUDEX_IGDB_CLIENT_ID: your-twitch-client-id
+      # LUDEX_IGDB_CLIENT_SECRET: your-twitch-client-secret
     restart: unless-stopped
 
 volumes:

@@ -51,7 +51,29 @@ def init_db() -> None:
     from . import models  # noqa: F401  -- register models on Base.metadata
 
     Base.metadata.create_all(engine)
+    _add_missing_columns()
 
     from .auth import ensure_admin  # seed the first admin from configured creds
 
     ensure_admin()
+
+
+def _add_missing_columns() -> None:
+    """Lightweight forward migration for pre-existing SQLite DBs.
+
+    ``create_all`` never ALTERs an existing table, so new columns on Game are
+    added here for installs created before this version.
+    """
+    additions = {
+        "genres": "VARCHAR",
+        "release_year": "INTEGER",
+        "rating": "INTEGER",
+    }
+    with engine.begin() as conn:
+        info = conn.exec_driver_sql("PRAGMA table_info(game)").fetchall()
+        if not info:
+            return  # fresh DB — create_all already made the full table
+        existing = {row[1] for row in info}
+        for name, sqltype in additions.items():
+            if name not in existing:
+                conn.exec_driver_sql(f"ALTER TABLE game ADD COLUMN {name} {sqltype}")

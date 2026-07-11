@@ -6,6 +6,7 @@ import {
   Copy,
   FolderPlus,
   HardDrive,
+  Image as ImageIcon,
   Loader2,
   RefreshCw,
   Terminal,
@@ -17,8 +18,10 @@ import {
   browse,
   changeMyPassword,
   deleteLibrary,
+  getArtworkStatus,
   getLibraries,
   getScanStatus,
+  refreshArtwork,
   triggerScan,
   type BrowseResult,
 } from "@/api";
@@ -30,9 +33,74 @@ export function Settings() {
     <div className="mx-auto max-w-3xl space-y-8">
       <h1 className="text-xl font-semibold text-white">Settings</h1>
       <LibrariesSection />
+      <ArtworkSection />
       <AgentSection />
       <AccountSection />
     </div>
+  );
+}
+
+function ArtworkSection() {
+  const { data: status } = useQuery({ queryKey: ["artwork-status"], queryFn: getArtworkStatus });
+  const qc = useQueryClient();
+  const [msg, setMsg] = useState<string | null>(null);
+  const refresh = useMutation({
+    mutationFn: refreshArtwork,
+    onSuccess: () => {
+      setMsg("Fetching covers + metadata in the background. Refresh the library in a minute.");
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["games"] }), 8000);
+    },
+    onError: (e) => setMsg(e instanceof Error ? e.message : "Failed"),
+  });
+
+  const enabled = status?.enabled ?? false;
+
+  return (
+    <Section
+      title="Game artwork & metadata"
+      icon={<ImageIcon className="h-5 w-5" />}
+      action={
+        <button
+          className="btn-ghost h-9"
+          onClick={() => refresh.mutate()}
+          disabled={!enabled || refresh.isPending}
+        >
+          <RefreshCw className={cn("h-4 w-4", refresh.isPending && "animate-spin")} />
+          Refresh artwork
+        </button>
+      }
+    >
+      <p className="text-sm text-slate-400">
+        Ludex fetches cover art from <span className="text-slate-200">SteamGridDB</span> and
+        descriptions/genres from <span className="text-slate-200">IGDB</span> - like a TVDB key in
+        Jellyfin. Add keys as environment variables, then Refresh:
+      </p>
+      <ul className="mt-3 space-y-1 text-xs text-slate-500">
+        <li>
+          <code className="text-accent">LUDEX_STEAMGRIDDB_KEY</code> - free key from your
+          SteamGridDB profile (covers).
+        </li>
+        <li>
+          <code className="text-accent">LUDEX_IGDB_CLIENT_ID</code> +{" "}
+          <code className="text-accent">LUDEX_IGDB_CLIENT_SECRET</code> - free Twitch dev app
+          (metadata).
+        </li>
+      </ul>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs">
+        <span className={cn("chip", status?.steamgriddb && "border-play/40 bg-play/15 text-play")}>
+          SteamGridDB {status?.steamgriddb ? "connected" : "off"}
+        </span>
+        <span className={cn("chip", status?.igdb && "border-play/40 bg-play/15 text-play")}>
+          IGDB {status?.igdb ? "connected" : "off"}
+        </span>
+      </div>
+      {msg && <p className="mt-2 text-xs text-slate-400">{msg}</p>}
+      {!enabled && (
+        <p className="mt-2 text-xs text-slate-500">
+          Set at least one key and restart the server to enable fetching.
+        </p>
+      )}
+    </Section>
   );
 }
 

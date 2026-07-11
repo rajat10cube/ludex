@@ -151,10 +151,22 @@ def discover_games(root: Path) -> list[dict]:
     return found
 
 
+# cover_path is handled separately so a re-scan never wipes a fetched cover.
 _SYNC_FIELDS = (
     "title", "version", "kind", "setup_type", "requires_hypervisor", "release_group",
-    "instructions", "cover_path", "exe_hint", "payload_path", "size_bytes", "file_count",
+    "instructions", "exe_hint", "payload_path", "size_bytes", "file_count",
 )
+
+
+def _is_cached_cover(path: str | None) -> bool:
+    """True if a cover path points into our artwork cache (a fetched cover)."""
+    if not path:
+        return False
+    try:
+        cache = get_settings().artwork_dir().resolve()
+        return cache == Path(path).resolve().parent
+    except OSError:
+        return False
 
 
 def _sync_library(db, library: Library) -> int:
@@ -177,6 +189,11 @@ def _sync_library(db, library: Library) -> int:
         else:
             for field in _SYNC_FIELDS:
                 setattr(game, field, cand[field])
+            # Prefer a local cover.jpg; otherwise keep any previously fetched cover.
+            if cand["cover_path"]:
+                game.cover_path = cand["cover_path"]
+            elif not _is_cached_cover(game.cover_path):
+                game.cover_path = None
             game.missing = False
         game.scanned_at = now
 
@@ -187,11 +204,65 @@ def _sync_library(db, library: Library) -> int:
     return len(found_paths)
 
 
+def backfill_artwork(force: bool = False) -> int:
+    """Fetch covers + metadata for games that lack them. Returns count updated.
+
+    Cheap and incremental: skips games that already have a cover/metadata, and
+    skips ones with a recent miss marker unless ``force`` clears them first.
+    A no-op when no provider keys are configured.
+    """
+    from ..artwork import ArtworkService
+
+    art = ArtworkService()
+    if not art.enabled():
+        return 0
+    if force:
+        art.clear_markers()
+
+    updated = 0
+    with SessionLocal() as db:
+        games = db.scalars(select(Game).where(Game.missing.is_(False))).all()
+        for game in games:
+            has_cover = bool(game.cover_path and Path(game.cover_path).is_file())
+            want_cover = (art.sgdb is not None or art.igdb is not None) and not has_cover and (
+                force or not (art.cache / f"{game.slug}.cover.miss").exists()
+            )
+            want_meta = art.igdb is not None and game.description is None and (
+                force or not (art.cache / f"{game.slug}.meta.miss").exists()
+            )
+            if not (want_cover or want_meta):
+                continue
+
+            # Search by clean title only; version/edition tags hurt matching.
+            cover_path, meta = art.fetch_for(
+                game.slug, game.title, want_cover=want_cover, want_meta=want_meta
+            )
+            changed = False
+            if cover_path is not None:
+                game.cover_path = str(cover_path)
+                changed = True
+            if meta is not None:
+                if meta.summary:
+                    game.description = meta.summary
+                if meta.genres:
+                    game.genres = ", ".join(meta.genres)
+                if meta.year:
+                    game.release_year = meta.year
+                if meta.rating is not None:
+                    game.rating = meta.rating
+                changed = True
+            if changed:
+                updated += 1
+                db.commit()
+    _status["artwork"] = updated
+    return updated
+
+
 def run_scan() -> dict:
     """Scan all libraries (serialized; safe to call from a background task)."""
     if not _lock.acquire(blocking=False):
         return scan_status()  # a scan is already running
-    _status.update(state="scanning", errors=[], games=0,
+    _status.update(state="scanning", errors=[], games=0, artwork=0,
                    started_at=datetime.now(UTC).isoformat(),
                    finished_at=None)
     try:
@@ -204,6 +275,10 @@ def run_scan() -> dict:
                     db.rollback()
                     _status["errors"].append(f"{library.path}: {e}")
         _status["games"] = total
+        try:
+            backfill_artwork()
+        except Exception as e:  # never let artwork failures break a scan
+            _status["errors"].append(f"artwork: {e}")
     finally:
         _status.update(state="idle",
                        finished_at=datetime.now(UTC).isoformat())

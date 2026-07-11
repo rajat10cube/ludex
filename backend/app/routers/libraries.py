@@ -9,10 +9,11 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from ..artwork import ArtworkService
 from ..auth import require_admin
 from ..db import get_db
 from ..models import Game, Library
-from ..scanner.service import run_scan, scan_status
+from ..scanner.service import backfill_artwork, run_scan, scan_status
 
 router = APIRouter(prefix="/libraries", tags=["libraries"], dependencies=[Depends(require_admin)])
 
@@ -84,6 +85,26 @@ def trigger_scan(background: BackgroundTasks) -> dict:
 @router.get("/scan/status")
 def get_scan_status() -> dict:
     return scan_status()
+
+
+@router.post("/artwork/refresh", status_code=202)
+def refresh_artwork(background: BackgroundTasks) -> dict:
+    """Re-fetch covers + metadata (clears miss markers first)."""
+    if not ArtworkService().enabled():
+        raise HTTPException(
+            400,
+            "No artwork provider configured. Set LUDEX_STEAMGRIDDB_KEY and/or "
+            "LUDEX_IGDB_CLIENT_ID + LUDEX_IGDB_CLIENT_SECRET.",
+        )
+    background.add_task(backfill_artwork, True)
+    return {"status": "started"}
+
+
+@router.get("/artwork/status")
+def artwork_status() -> dict:
+    art = ArtworkService()
+    return {"steamgriddb": art.sgdb is not None, "igdb": art.igdb is not None,
+            "enabled": art.enabled()}
 
 
 @router.get("/browse")
