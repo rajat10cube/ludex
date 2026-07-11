@@ -1,0 +1,25 @@
+services:
+  ludex:
+    build: .
+    image: ludex:latest
+    container_name: ludex
+    ports:
+      - "8810:8000"
+    volumes:
+      # mount your real game libraries read-only (edit paths to match your host)
+      - /mnt/games:/libraries/games:ro
+      # library config (optional; you can also add libraries in the web UI)
+      - ./ludex.yaml:/config/ludex.yaml:ro
+      # app state (sqlite + secret key)
+      - ludex-data:/data
+    environment:
+      LUDEX_CONFIG: /config/ludex.yaml
+      LUDEX_DATA_DIR: /data
+      LUDEX_AUTH: basic
+      LUDEX_AUTH_USER: admin
+      LUDEX_AUTH_PASS: change-me
+      LUDEX_DEV_CORS: "false"
+    restart: unless-stopped
+
+volumes:
+  ludex-data:

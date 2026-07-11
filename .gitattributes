@@ -1,0 +1,6 @@
+# Normalize to LF in the repository for all text files.
+# (Critical for deploy/lxc/*.sh and ct/*.sh — CRLF would break them on Linux.)
+* text=auto eol=lf
+
+# Windows agent scripts: PowerShell handles LF fine; keep them LF too.
+*.ps1 text eol=lf

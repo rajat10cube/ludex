@@ -1,0 +1,10 @@
+# Ludex library configuration (optional — you can also add libraries in the web UI).
+# Entries listed here are imported into the database on first run only.
+#
+# Each library is a folder whose top-level entries are games:
+#   - a subfolder            -> a portable game (downloaded as zip, extracted, played)
+#   - a loose .exe / .msi    -> an installer (downloaded and run on the laptop)
+#   - a .zip/.7z/.rar/.iso   -> an archive (downloaded; zip auto-extracts)
+libraries: []
+#  - path: /mnt/games
+#    name: Games

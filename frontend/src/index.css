@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-ink-950 text-slate-200 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04";
+  }
+  ::selection {
+    @apply bg-accent/30;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-ink-700/70 bg-ink-850;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm
+      font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-ink-950 hover:bg-accent-hover;
+  }
+  .btn-play {
+    @apply btn bg-play text-ink-950 hover:brightness-110;
+  }
+  .btn-ghost {
+    @apply btn border border-ink-600 bg-ink-800 text-slate-200 hover:bg-ink-700;
+  }
+  .btn-danger {
+    @apply btn border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20;
+  }
+  .input {
+    @apply w-full rounded-lg border border-ink-600 bg-ink-900 px-3 py-2 text-sm text-slate-100
+      placeholder:text-slate-500 focus:border-accent focus:outline-none;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-ink-600 bg-ink-800
+      px-2.5 py-1 text-xs font-medium text-slate-300;
+  }
+}
+
+/* Custom scrollbar for the dark theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3a4d transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: #2a3a4d;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
