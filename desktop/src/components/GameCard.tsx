@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Disc, Package, ShieldAlert } from "lucide-react";
 
 import { coverDataUrl, type Game } from "@/api";
+import { installPercent, phaseLabel, useInstalls } from "@/installs";
 import { cn, formatBytes } from "@/lib/utils";
 
 const SETUP_LABEL: Record<string, string> = {
@@ -23,6 +24,10 @@ export function useCover(slug: string, hasCover: boolean) {
 
 export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
   const { data: cover } = useCover(game.slug, game.hasCover);
+  const { installs } = useInstalls();
+  const st = installs[game.slug];
+  const installing = st?.status === "active";
+  const pct = installPercent(st);
 
   return (
     <button onClick={onOpen} className="group flex flex-col text-left focus:outline-none" title={game.title}>
@@ -30,6 +35,7 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
         className={cn(
           "relative aspect-[3/4] w-full overflow-hidden rounded-xl border border-ink-700/70 bg-ink-800",
           "ring-accent/0 transition group-hover:-translate-y-0.5 group-hover:ring-2 group-hover:ring-accent/60",
+          installing && "ring-2 ring-accent/70",
         )}
       >
         {cover ? (
@@ -43,7 +49,7 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
         )}
 
         <div className="absolute left-2 top-2 flex flex-col gap-1">
-          {game.installed && (
+          {game.installed && !installing && (
             <span className="chip border-play/40 bg-play/15 text-play">
               <CheckCircle2 className="h-3 w-3" /> Installed
             </span>
@@ -55,13 +61,28 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
           )}
         </div>
 
-        <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-ink-950/90 to-transparent px-2.5 pb-2 pt-8 text-[11px] text-slate-300">
-          <span className="inline-flex items-center gap-1">
-            {game.setupType === "iso" ? <Disc className="h-3 w-3" /> : <Package className="h-3 w-3" />}
-            {SETUP_LABEL[game.setupType] ?? game.setupType}
-          </span>
-          <span>{formatBytes(game.sizeBytes)}</span>
-        </div>
+        {installing ? (
+          <div className="absolute inset-x-0 bottom-0 bg-ink-950/85 px-2.5 pb-2 pt-6">
+            <div className="mb-1 flex items-center justify-between text-[10px] font-medium text-slate-300">
+              <span>{phaseLabel(st)}</span>
+              <span>{pct != null ? `${pct.toFixed(0)}%` : ""}</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-ink-700">
+              <div
+                className={cn("h-full rounded-full bg-accent", pct == null && "w-1/3 animate-pulse")}
+                style={pct != null ? { width: `${pct}%` } : undefined}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-ink-950/90 to-transparent px-2.5 pb-2 pt-8 text-[11px] text-slate-300">
+            <span className="inline-flex items-center gap-1">
+              {game.setupType === "iso" ? <Disc className="h-3 w-3" /> : <Package className="h-3 w-3" />}
+              {SETUP_LABEL[game.setupType] ?? game.setupType}
+            </span>
+            <span>{formatBytes(game.sizeBytes)}</span>
+          </div>
+        )}
       </div>
 
       <div className="mt-2 px-0.5">

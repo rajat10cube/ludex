@@ -11,16 +11,9 @@ import {
   X,
 } from "lucide-react";
 
-import {
-  gameDetail,
-  install,
-  onInstallProgress,
-  openInstallDir,
-  play,
-  uninstall,
-  type InstallProgress,
-} from "@/api";
+import { gameDetail, openInstallDir, play, uninstall } from "@/api";
 import { useCover } from "@/components/GameCard";
+import { installPercent, phaseLabel, useInstalls, type InstallState } from "@/installs";
 import { cn, formatBytes, formatPlaytime } from "@/lib/utils";
 
 const SETUP_HELP: Record<string, string> = {
@@ -37,18 +30,12 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
   const { data: game, isLoading } = useQuery({ queryKey: ["game", slug], queryFn: () => gameDetail(slug) });
   const { data: cover } = useCover(slug, game?.hasCover ?? false);
 
-  const [progress, setProgress] = useState<InstallProgress | null>(null);
-  const [busy, setBusy] = useState<null | "install" | "play" | "uninstall">(null);
-  const [error, setError] = useState<string | null>(null);
+  const { installs, startInstall } = useInstalls();
+  const st = installs[slug];
+  const installing = st?.status === "active";
 
-  useEffect(() => {
-    const un = onInstallProgress((p) => {
-      if (p.slug === slug) setProgress(p);
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, [slug]);
+  const [busy, setBusy] = useState<null | "play" | "uninstall">(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !busy && onClose();
@@ -59,21 +46,6 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["game", slug] });
     qc.invalidateQueries({ queryKey: ["games"] });
-  };
-
-  const doInstall = async () => {
-    setError(null);
-    setBusy("install");
-    setProgress({ slug, phase: "download", received: 0, total: 0, message: "Starting…" });
-    try {
-      await install(slug);
-      refresh();
-    } catch (e) {
-      setError(typeof e === "string" ? e : "Install failed");
-    } finally {
-      setBusy(null);
-      setProgress(null);
-    }
   };
 
   const doPlay = async () => {
@@ -173,8 +145,8 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
                   </div>
                 )}
 
-                {busy === "install" && progress ? (
-                  <InstallProgressBar p={progress} />
+                {installing ? (
+                  <InstallProgressBar p={st} />
                 ) : (
                   <div className="mt-4 flex flex-wrap gap-2">
                     {game.installed ? (
@@ -192,14 +164,20 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
                         </button>
                       </>
                     ) : (
-                      <button className="btn-primary" onClick={doInstall} disabled={!!busy}>
+                      <button className="btn-primary" onClick={() => startInstall(slug, game.title)}>
                         <Download className="h-4 w-4" /> Install
                       </button>
                     )}
                   </div>
                 )}
 
+                {st?.status === "error" && <p className="mt-3 text-sm text-red-400">{st.error}</p>}
                 {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+                {installing && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Installing in the background — you can close this and keep browsing.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -220,18 +198,18 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
   );
 }
 
-function InstallProgressBar({ p }: { p: InstallProgress }) {
-  const pct = p.total > 0 ? Math.min(100, (p.received / p.total) * 100) : null;
+function InstallProgressBar({ p }: { p: InstallState }) {
+  const pct = installPercent(p);
   const label =
     p.phase === "download"
       ? pct != null
         ? `Downloading ${formatBytes(p.received)} / ${formatBytes(p.total)}`
         : `Downloading ${formatBytes(p.received)}`
       : p.phase === "extract"
-        ? "Extracting…"
-        : p.phase === "install"
-          ? p.message ?? "Installing…"
-          : "Working…";
+        ? pct != null
+          ? `Extracting ${pct.toFixed(0)}%`
+          : "Extracting…"
+        : `${phaseLabel(p)}…`;
   return (
     <div className="mt-4">
       <div className="mb-1 flex items-center justify-between text-xs text-slate-400">

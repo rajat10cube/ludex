@@ -14,8 +14,12 @@ and natively.
   your password is stored in **Windows Credential Manager** (never on disk).
 - **Library** grid with covers, search, and Installed/DRM filters.
 - **Install** — streams the game from the server (folder games as a `.tar`,
-  loose files direct), extracts, finds the exe, and reports it back. Live
-  progress bar.
+  loose files direct), extracts, finds the exe, and reports it back. Downloads
+  **and extraction** both show a real percentage.
+- **Background & concurrent installs** — installs run in the background, so you can
+  close the game panel, keep browsing, and queue several at once. A **Downloads**
+  panel in the header shows every in-flight install with progress, and each game
+  tile shows its own progress overlay while installing.
 - **Play** — launches the game and records playtime. Hypervisor/Denuvo games are
   launched **as administrator** (still your job to run `VBS.cmd` + reboot first).
 - **Uninstall**, open install folder, change install directory, sign out.

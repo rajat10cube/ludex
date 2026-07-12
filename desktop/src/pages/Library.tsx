@@ -1,6 +1,16 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { FolderCog, Gamepad2, Loader2, LogOut, RefreshCw, Search } from "lucide-react";
+import {
+  CheckCircle2,
+  Download,
+  FolderCog,
+  Gamepad2,
+  Loader2,
+  LogOut,
+  RefreshCw,
+  Search,
+  X,
+} from "lucide-react";
 
 import {
   disconnect,
@@ -12,7 +22,8 @@ import {
 } from "@/api";
 import { GameCard } from "@/components/GameCard";
 import { GameDetail } from "@/components/GameDetail";
-import { cn } from "@/lib/utils";
+import { installPercent, phaseLabel, useInstalls, type InstallState } from "@/installs";
+import { cn, formatBytes } from "@/lib/utils";
 
 type Filter = "all" | "installed" | "drm";
 
@@ -22,6 +33,9 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
   const [filter, setFilter] = useState<Filter>("all");
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
+  const [showDownloads, setShowDownloads] = useState(false);
+  const { installs, activeCount, dismiss } = useInstalls();
+  const downloadList = Object.values(installs);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ["games"],
@@ -79,6 +93,27 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
         />
 
         <div className="ml-auto flex items-center gap-2">
+          <div className="relative">
+            <button
+              className="btn-ghost relative h-9 px-2.5"
+              onClick={() => setShowDownloads((s) => !s)}
+              title="Downloads"
+            >
+              <Download className="h-4 w-4" />
+              {activeCount > 0 && (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold text-ink-950">
+                  {activeCount}
+                </span>
+              )}
+            </button>
+            {showDownloads && (
+              <DownloadsPanel
+                items={downloadList}
+                onDismiss={dismiss}
+                onClose={() => setShowDownloads(false)}
+              />
+            )}
+          </div>
           <button
             className="btn-ghost h-9 px-2.5"
             onClick={() => refetch()}
@@ -179,4 +214,74 @@ function SegBtns({
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full items-center justify-center text-slate-400">{children}</div>;
+}
+
+function DownloadsPanel({
+  items,
+  onDismiss,
+  onClose,
+}: {
+  items: InstallState[];
+  onDismiss: (slug: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="absolute right-0 top-11 z-30 w-80 card p-2 shadow-xl"
+      onMouseLeave={onClose}
+    >
+      <div className="flex items-center justify-between px-2 py-1">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Downloads
+        </span>
+      </div>
+      {items.length === 0 ? (
+        <p className="px-2 py-4 text-center text-xs text-slate-500">No downloads yet.</p>
+      ) : (
+        <ul className="max-h-80 space-y-1 overflow-y-auto">
+          {items.map((it) => {
+            const pct = installPercent(it);
+            return (
+              <li key={it.slug} className="rounded-lg px-2 py-2 hover:bg-ink-800/60">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm text-slate-200" title={it.title}>
+                    {it.title}
+                  </span>
+                  {it.status === "done" ? (
+                    <CheckCircle2 className="h-4 w-4 text-play" />
+                  ) : it.status === "error" ? (
+                    <button onClick={() => onDismiss(it.slug)} title="Dismiss">
+                      <X className="h-4 w-4 text-slate-500 hover:text-slate-300" />
+                    </button>
+                  ) : (
+                    <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <span className={cn(it.status === "error" && "text-red-400")}>
+                    {it.status === "error"
+                      ? (it.error ?? "Failed")
+                      : it.status === "done"
+                        ? "Installed"
+                        : it.phase === "download"
+                          ? `Downloading ${formatBytes(it.received)}${it.total > 1 ? ` / ${formatBytes(it.total)}` : ""}`
+                          : phaseLabel(it)}
+                  </span>
+                  {it.status === "active" && pct != null && <span>{pct.toFixed(0)}%</span>}
+                </div>
+                {it.status === "active" && (
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-ink-700">
+                    <div
+                      className={cn("h-full rounded-full bg-accent", pct == null && "w-1/3 animate-pulse")}
+                      style={pct != null ? { width: `${pct}%` } : undefined}
+                    />
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
 }

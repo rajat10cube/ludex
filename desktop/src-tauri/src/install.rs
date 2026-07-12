@@ -13,7 +13,6 @@ use crate::config::{self, AppConfig, InstallEntry, InstallState};
 use crate::launch;
 use crate::server::Server;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const JUNK_EXE: &[&str] = &[
     "unins", "setup", "install", "redist", "vcredist", "vc_redist", "dxsetup", "dxwebsetup",
     "dotnet", "oalinst", "crashhandler", "unitycrashhandler", "crashreport", "crashpad",
@@ -97,8 +96,8 @@ pub fn install(
 
     // --- extract / place / run installer ---
     if is_tar {
-        emit(app, slug, "extract", 0, 0, Some("Extracting…"));
-        extract_archive(&download_path, &dest)?;
+        emit(app, slug, "extract", 0, 1, Some("Extracting…"));
+        extract_tar(app, slug, &download_path, &dest)?;
         let _ = fs::remove_file(&download_path);
         if let Some(rel) = &payload_path {
             let payload = dest.join(rel.replace('/', "\\"));
@@ -119,8 +118,8 @@ pub fn install(
             .to_lowercase();
         match ext.as_str() {
             "zip" => {
-                emit(app, slug, "extract", 0, 0, Some("Extracting…"));
-                extract_archive(&download_path, &dest)?;
+                emit(app, slug, "extract", 0, 1, Some("Extracting…"));
+                extract_zip(app, slug, &download_path, &dest)?;
                 let _ = fs::remove_file(&download_path);
             }
             "iso" => {
@@ -160,20 +159,69 @@ pub fn install(
     })
 }
 
-pub fn extract_archive(archive: &Path, dest: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    // Windows ships bsdtar (tar.exe), which also extracts .zip.
-    let status = std::process::Command::new("tar")
-        .arg("-xf")
-        .arg(archive)
-        .arg("-C")
-        .arg(dest)
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map_err(|e| format!("Could not run tar.exe (needs Windows 10 1803+): {e}"))?;
-    if !status.success() {
-        return Err("Extraction failed".into());
+/// A Read wrapper that reports how far through the archive we are (throttled).
+struct ProgressReader<'a, R: Read> {
+    inner: R,
+    read: u64,
+    total: u64,
+    last: Instant,
+    app: &'a AppHandle,
+    slug: &'a str,
+}
+
+impl<R: Read> Read for ProgressReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read += n as u64;
+        if self.last.elapsed() > Duration::from_millis(150) {
+            emit(self.app, self.slug, "extract", self.read, self.total, None);
+            self.last = Instant::now();
+        }
+        Ok(n)
     }
+}
+
+/// Extract an (uncompressed) tar, streaming byte progress off the archive read.
+fn extract_tar(app: &AppHandle, slug: &str, archive: &Path, dest: &Path) -> Result<(), String> {
+    let file = File::open(archive).map_err(|e| e.to_string())?;
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0).max(1);
+    let reader = ProgressReader { inner: file, read: 0, total, last: Instant::now(), app, slug };
+    let mut archive = tar::Archive::new(reader);
+    archive.set_overwrite(true);
+    archive.unpack(dest).map_err(|e| format!("Extraction failed: {e}"))?;
+    emit(app, slug, "extract", total, total, None);
+    Ok(())
+}
+
+/// Extract a .zip, reporting progress by cumulative compressed bytes.
+fn extract_zip(app: &AppHandle, slug: &str, archive: &Path, dest: &Path) -> Result<(), String> {
+    let file = File::open(archive).map_err(|e| e.to_string())?;
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0).max(1);
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("Bad zip: {e}"))?;
+    let mut done: u64 = 0;
+    let mut last = Instant::now();
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        let outpath = match entry.enclosed_name() {
+            Some(p) => dest.join(p),
+            None => continue,
+        };
+        if entry.is_dir() {
+            let _ = fs::create_dir_all(&outpath);
+        } else {
+            if let Some(parent) = outpath.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let mut out = File::create(&outpath).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        }
+        done += entry.compressed_size();
+        if last.elapsed() > Duration::from_millis(150) {
+            emit(app, slug, "extract", done.min(total), total, None);
+            last = Instant::now();
+        }
+    }
+    emit(app, slug, "extract", total, total, None);
     Ok(())
 }
 
