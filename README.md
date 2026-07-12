@@ -15,13 +15,23 @@ from any browser.
 ## How it fits together
 
 ```
-   Proxmox server (Ludex)                Windows laptop
+   Proxmox server (Ludex)                Windows PC
    +----------------------+              +-----------------------+
-   |  scans game folders  |   HTTP/tar   |  companion agent      |
-   |  library + web UI    |  <--------->  |  ludex:// handler     |
+   |  scans game folders  |   HTTP/tar   |  Ludex Desktop app    |
+   |  library + web UI    |  <--------->  |  (native Tauri app)   |
    |  download + playtime |   (Basic)    |  download/extract/run |
    +----------------------+              +-----------------------+
 ```
+
+There are **two ways to install & play** on Windows:
+
+- **[Ludex Desktop](desktop/README.md)** (recommended) - a real native app (Tauri):
+  browse, install with a progress bar, and launch games from one window. No
+  browser, no console. Connects straight to your server.
+- **Browser + companion agent** - use the web UI and a small PowerShell agent that
+  handles `ludex://` install/play links. Lighter, but pops a console on each action.
+
+Either way the **server is identical** and just serves the library.
 
 ## Torrent-repack aware
 

@@ -1,0 +1,18 @@
+# Node / Vite
+node_modules/
+dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Generated mobile icons (this is a Windows-only app)
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# OS
+.DS_Store
+Thumbs.db
