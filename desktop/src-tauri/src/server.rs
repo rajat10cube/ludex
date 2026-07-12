@@ -14,8 +14,11 @@ pub struct Server {
 
 impl Server {
     pub fn new(base: &str, user: &str, pass: &str) -> Self {
+        // No *total* timeout: downloads run for many minutes. Only bound how long
+        // we wait to establish the connection; per-call timeouts are added to the
+        // small API requests below (but never to the download stream).
         let http = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         Server {
@@ -35,6 +38,7 @@ impl Server {
             .http
             .get(self.url(path))
             .basic_auth(&self.user, Some(&self.pass))
+            .timeout(Duration::from_secs(30))
             .send()
             .map_err(net_err)?;
         if !resp.status().is_success() {
@@ -49,6 +53,7 @@ impl Server {
             .post(self.url(path))
             .basic_auth(&self.user, Some(&self.pass))
             .json(&body)
+            .timeout(Duration::from_secs(30))
             .send()
             .map_err(net_err)?;
         if !resp.status().is_success() {
@@ -74,6 +79,7 @@ impl Server {
             .http
             .get(self.url(&format!("/games/{slug}/cover")))
             .basic_auth(&self.user, Some(&self.pass))
+            .timeout(Duration::from_secs(30))
             .send()
             .map_err(net_err)?;
         if resp.status().as_u16() == 404 {
