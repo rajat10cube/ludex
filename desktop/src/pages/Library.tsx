@@ -64,7 +64,7 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-ink-700/70 bg-ink-950/85 px-4 backdrop-blur">
+      <header className="relative z-30 flex h-14 shrink-0 items-center gap-3 border-b border-ink-700/70 bg-ink-950/85 px-4 backdrop-blur">
         <span className="flex items-center gap-2 font-semibold text-white">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent">
             <Gamepad2 className="h-5 w-5" />
