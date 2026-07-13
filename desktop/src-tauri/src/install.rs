@@ -243,7 +243,14 @@ pub fn run(
     emit(app, slug, "download", received, total.max(received), None);
 
     // --- extract / place / run installer ---
-    finalize(app, slug, &record, &dest, is_tar, &download_path)?;
+    if let Err(e) = finalize(app, slug, &record, &dest, is_tar, &download_path) {
+        // download is done but installing failed — clear the record + partial so it
+        // doesn't linger as a bogus "resumable" download; a retry starts clean.
+        config::remove_download(app, slug);
+        let _ = fs::remove_file(&download_path);
+        emit(app, slug, "error", received, total, Some(&e));
+        return Err(e);
+    }
 
     let exe = find_exe(&dest, record.exe_hint.as_deref());
     let mut state = config::load_state(app);
@@ -342,6 +349,30 @@ impl<R: Read> Read for ProgressReader<'_, R> {
     }
 }
 
+/// Join `rel` under `dest`, replacing characters that are illegal in Windows
+/// file names (e.g. the ':' in "Game: Deluxe Edition") so extraction can't fail
+/// on names that were legal on the Linux server / inside the archive.
+fn safe_join(dest: &Path, rel: &Path) -> PathBuf {
+    let mut out = dest.to_path_buf();
+    for comp in rel.components() {
+        if let std::path::Component::Normal(seg) = comp {
+            let cleaned: String = seg
+                .to_string_lossy()
+                .chars()
+                .map(|c| match c {
+                    ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    c if (c as u32) < 0x20 => '_',
+                    c => c,
+                })
+                .collect();
+            // Windows also forbids a trailing space or dot on a name.
+            let cleaned = cleaned.trim_end_matches(|c| c == ' ' || c == '.');
+            out.push(if cleaned.is_empty() { "_" } else { cleaned });
+        }
+    }
+    out
+}
+
 /// Extract an (uncompressed) tar, streaming byte progress off the archive read.
 fn extract_tar(app: &AppHandle, slug: &str, archive: &Path, dest: &Path) -> Result<(), String> {
     let file = File::open(archive).map_err(|e| e.to_string())?;
@@ -349,7 +380,15 @@ fn extract_tar(app: &AppHandle, slug: &str, archive: &Path, dest: &Path) -> Resu
     let reader = ProgressReader { inner: file, read: 0, total, last: Instant::now(), app, slug };
     let mut archive = tar::Archive::new(reader);
     archive.set_overwrite(true);
-    archive.unpack(dest).map_err(|e| format!("Extraction failed: {e}"))?;
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let rel = entry.path().map_err(|e| e.to_string())?.into_owned();
+        let out = safe_join(dest, &rel);
+        if let Some(parent) = out.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        entry.unpack(&out).map_err(|e| format!("Extraction failed: {e}"))?;
+    }
     emit(app, slug, "extract", total, total, None);
     Ok(())
 }
@@ -364,7 +403,7 @@ fn extract_zip(app: &AppHandle, slug: &str, archive: &Path, dest: &Path) -> Resu
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let outpath = match entry.enclosed_name() {
-            Some(p) => dest.join(p),
+            Some(p) => safe_join(dest, &p),
             None => continue,
         };
         if entry.is_dir() {
@@ -432,4 +471,29 @@ pub fn report_installed(server: &Server, cfg: &AppConfig, state: &InstallState) 
         .map(|(slug, e)| json!({ "slug": slug, "version": e.version, "install_path": e.path }))
         .collect();
     server.report_installed(&cfg.device, json!(games));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_join;
+    use std::path::Path;
+
+    #[test]
+    fn sanitizes_windows_illegal_chars() {
+        let out = safe_join(
+            Path::new("D:\\Games\\slug"),
+            Path::new("Assassin's Creed: Black Flag/bin/what?.exe"),
+        );
+        let tail = out.to_string_lossy().replace("D:\\Games\\slug\\", "");
+        assert_eq!(tail, "Assassin's Creed_ Black Flag\\bin\\what_.exe");
+        // no illegal char survived in the joined-under-dest portion
+        assert!(!tail.contains(':'));
+        assert!(!tail.contains('?'));
+    }
+
+    #[test]
+    fn trims_trailing_dots_and_spaces() {
+        let out = safe_join(Path::new("D:\\d"), Path::new("name. /ok"));
+        assert_eq!(out.to_string_lossy().replace("D:\\d\\", ""), "name\\ok");
+    }
 }
