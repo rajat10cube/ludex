@@ -72,6 +72,57 @@ pub fn covers_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(d)
 }
 
+/// A download in progress or paused — persisted so it survives app restarts and
+/// can be resumed from `bytes`.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct DownloadRecord {
+    pub slug: String,
+    pub title: String,
+    pub download_kind: String, // "tar" | "file"
+    pub download_name: String,
+    pub setup_type: String,
+    pub exe_hint: Option<String>,
+    pub payload_path: Option<String>,
+    pub hypervisor: bool,
+    pub version: Option<String>,
+    pub size_hint: u64,
+    pub dest: String,
+    pub temp_path: String,
+    pub bytes: u64,
+    pub paused: bool,
+}
+
+pub type Downloads = HashMap<String, DownloadRecord>;
+
+pub fn load_downloads(app: &AppHandle) -> Downloads {
+    match data_dir(app) {
+        Ok(d) => fs::read_to_string(d.join("downloads.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        Err(_) => Downloads::default(),
+    }
+}
+
+fn save_downloads(app: &AppHandle, dl: &Downloads) {
+    if let Ok(d) = data_dir(app) {
+        let _ = fs::write(d.join("downloads.json"), serde_json::to_string_pretty(dl).unwrap());
+    }
+}
+
+pub fn save_download(app: &AppHandle, record: &DownloadRecord) {
+    let mut dl = load_downloads(app);
+    dl.insert(record.slug.clone(), record.clone());
+    save_downloads(app, &dl);
+}
+
+pub fn remove_download(app: &AppHandle, slug: &str) {
+    let mut dl = load_downloads(app);
+    if dl.remove(slug).is_some() {
+        save_downloads(app, &dl);
+    }
+}
+
 // --- credentials (Windows Credential Manager via keyring) ---
 pub fn set_password(account: &str, password: &str) -> Result<(), String> {
     keyring::Entry::new(KEYRING_SERVICE, account)

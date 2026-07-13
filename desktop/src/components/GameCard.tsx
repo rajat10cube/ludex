@@ -27,6 +27,8 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
   const { installs } = useInstalls();
   const st = installs[game.slug];
   const installing = st?.status === "active";
+  const paused = st?.status === "paused";
+  const busy = installing || paused;
   const pct = installPercent(st);
 
   return (
@@ -36,6 +38,7 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
           "relative aspect-[3/4] w-full overflow-hidden rounded-xl border border-ink-700/70 bg-ink-800",
           "ring-accent/0 transition group-hover:-translate-y-0.5 group-hover:ring-2 group-hover:ring-accent/60",
           installing && "ring-2 ring-accent/70",
+          paused && "ring-2 ring-amber-400/60",
         )}
       >
         {cover ? (
@@ -49,7 +52,7 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
         )}
 
         <div className="absolute left-2 top-2 flex flex-col gap-1">
-          {game.installed && !installing && (
+          {game.installed && !busy && (
             <span className="chip border-play/40 bg-play/15 text-play">
               <CheckCircle2 className="h-3 w-3" /> Installed
             </span>
@@ -61,7 +64,7 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
           )}
         </div>
 
-        {installing ? (
+        {busy && st ? (
           <div className="absolute inset-x-0 bottom-0 bg-ink-950/85 px-2.5 pb-2 pt-6">
             <div className="mb-1 flex items-center justify-between text-[10px] font-medium text-slate-300">
               <span>{phaseLabel(st)}</span>
@@ -69,7 +72,11 @@ export function GameCard({ game, onOpen }: { game: Game; onOpen: () => void }) {
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-ink-700">
               <div
-                className={cn("h-full rounded-full bg-accent", pct == null && "w-1/3 animate-pulse")}
+                className={cn(
+                  "h-full rounded-full",
+                  paused ? "bg-amber-400/70" : "bg-accent",
+                  pct == null && installing && "w-1/3 animate-pulse",
+                )}
                 style={pct != null ? { width: `${pct}%` } : undefined}
               />
             </div>

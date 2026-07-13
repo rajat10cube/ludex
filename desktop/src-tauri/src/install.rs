@@ -1,15 +1,18 @@
-//! Download + extract/install a game, then report it to the server.
+//! Download (pausable / resumable) + extract/install a game, then report it.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
-use crate::config::{self, AppConfig, InstallEntry, InstallState};
+use crate::config::{self, AppConfig, DownloadRecord, InstallEntry, InstallState};
 use crate::launch;
 use crate::server::Server;
 
@@ -18,6 +21,38 @@ const JUNK_EXE: &[&str] = &[
     "dotnet", "oalinst", "crashhandler", "unitycrashhandler", "crashreport", "crashpad",
     "touchup", "cleanup", "activate", "register",
 ];
+
+// download control states (shared atomic per active install)
+pub const RUN: u8 = 0;
+pub const PAUSE: u8 = 1;
+pub const CANCEL: u8 = 2;
+
+/// Tracks the control flag of each active download so pause/cancel can reach it.
+#[derive(Default)]
+pub struct InstallManager {
+    controls: Mutex<HashMap<String, Arc<AtomicU8>>>,
+}
+
+impl InstallManager {
+    pub fn register(&self, slug: &str) -> Arc<AtomicU8> {
+        let ctrl = Arc::new(AtomicU8::new(RUN));
+        self.controls.lock().unwrap().insert(slug.to_string(), ctrl.clone());
+        ctrl
+    }
+    /// Returns true if a download for `slug` was active (and got the signal).
+    pub fn signal(&self, slug: &str, state: u8) -> bool {
+        match self.controls.lock().unwrap().get(slug) {
+            Some(c) => {
+                c.store(state, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
+    pub fn unregister(&self, slug: &str) {
+        self.controls.lock().unwrap().remove(slug);
+    }
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -31,10 +66,20 @@ struct InstallProgress<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InstallResult {
+pub struct InstallStatus {
     pub slug: String,
-    pub install_path: String,
+    pub status: String, // "installed" | "paused" | "cancelled"
+    pub install_path: Option<String>,
     pub exe: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadRecordView {
+    pub slug: String,
+    pub title: String,
+    pub bytes: u64,
+    pub total: u64,
 }
 
 fn emit(app: &AppHandle, slug: &str, phase: &str, received: u64, total: u64, message: Option<&str>) {
@@ -44,69 +89,208 @@ fn emit(app: &AppHandle, slug: &str, phase: &str, received: u64, total: u64, mes
     );
 }
 
-pub fn install(
-    app: &AppHandle,
-    server: &Server,
-    cfg: &AppConfig,
-    slug: &str,
-) -> Result<InstallResult, String> {
+/// Leftover download records (paused or interrupted) that can be resumed.
+pub fn list_paused(app: &AppHandle) -> Vec<DownloadRecordView> {
+    config::load_downloads(app)
+        .into_values()
+        .map(|r| {
+            let total = r.size_hint.max(r.bytes);
+            DownloadRecordView { slug: r.slug, title: r.title, bytes: r.bytes, total }
+        })
+        .collect()
+}
+
+/// Delete a paused download's partial file + record (used by cancel when idle).
+pub fn discard_paused(app: &AppHandle, slug: &str) {
+    if let Some(r) = config::load_downloads(app).get(slug) {
+        let _ = fs::remove_file(&r.temp_path);
+    }
+    config::remove_download(app, slug);
+}
+
+fn build_record(server: &Server, cfg: &AppConfig, slug: &str) -> Result<DownloadRecord, String> {
     let game = server.game(slug)?;
-    let title = game["title"].as_str().unwrap_or(slug).to_string();
-    let download_kind = game["downloadKind"].as_str().unwrap_or("file").to_string();
-    let download_name = game["downloadName"].as_str().unwrap_or("download.bin").to_string();
-    let setup_type = game["setupType"].as_str().unwrap_or("portable").to_string();
-    let exe_hint = game["exeHint"].as_str().map(|s| s.to_string());
-    let payload_path = game["payloadPath"].as_str().map(|s| s.to_string());
-    let hypervisor = game["requiresHypervisor"].as_bool().unwrap_or(false);
-    let version = game["version"].as_str().map(|s| s.to_string());
-    let size_hint = game["sizeBytes"].as_u64().unwrap_or(0);
-
+    let is_tar = game["downloadKind"].as_str().unwrap_or("file") == "tar";
     let dest = PathBuf::from(&cfg.install_dir).join(slug);
-    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-
-    // --- download ---
-    emit(app, slug, "download", 0, size_hint, Some("Starting download…"));
-    let mut resp = server.download(slug)?;
-    let total = resp.content_length().unwrap_or(size_hint);
-    let is_tar = download_kind == "tar";
-    let download_path = if is_tar {
+    let download_name = game["downloadName"].as_str().unwrap_or("download.bin").to_string();
+    let temp_path = if is_tar {
         std::env::temp_dir().join(format!("ludex-{slug}.tar"))
     } else {
         dest.join(&download_name)
     };
-    {
-        let mut file = File::create(&download_path).map_err(|e| e.to_string())?;
-        let mut buf = vec![0u8; 256 * 1024];
-        let mut received: u64 = 0;
-        let mut last = Instant::now();
-        loop {
-            let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            received += n as u64;
-            if last.elapsed() > Duration::from_millis(150) {
-                emit(app, slug, "download", received, total.max(received), None);
-                last = Instant::now();
-            }
+    Ok(DownloadRecord {
+        slug: slug.to_string(),
+        title: game["title"].as_str().unwrap_or(slug).to_string(),
+        download_kind: game["downloadKind"].as_str().unwrap_or("file").to_string(),
+        download_name,
+        setup_type: game["setupType"].as_str().unwrap_or("portable").to_string(),
+        exe_hint: game["exeHint"].as_str().map(String::from),
+        payload_path: game["payloadPath"].as_str().map(String::from),
+        hypervisor: game["requiresHypervisor"].as_bool().unwrap_or(false),
+        version: game["version"].as_str().map(String::from),
+        size_hint: game["sizeBytes"].as_u64().unwrap_or(0),
+        dest: dest.to_string_lossy().to_string(),
+        temp_path: temp_path.to_string_lossy().to_string(),
+        bytes: 0,
+        paused: false,
+    })
+}
+
+pub fn run(
+    app: &AppHandle,
+    server: &Server,
+    cfg: &AppConfig,
+    slug: &str,
+    resume: bool,
+    control: Arc<AtomicU8>,
+) -> Result<InstallStatus, String> {
+    let mut record = if resume {
+        config::load_downloads(app)
+            .remove(slug)
+            .ok_or("No paused download to resume")?
+    } else {
+        build_record(server, cfg, slug)?
+    };
+
+    let is_tar = record.download_kind == "tar";
+    let dest = PathBuf::from(&record.dest);
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let download_path = PathBuf::from(&record.temp_path);
+
+    // resume from the actual partial size (or start over if it vanished)
+    let resume_from = if resume {
+        fs::metadata(&download_path).map(|m| m.len()).unwrap_or(0)
+    } else {
+        0
+    };
+    record.bytes = resume_from;
+    config::save_download(app, &record); // persist so a crash stays resumable
+
+    let mut file = if resume_from > 0 {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&download_path)
+            .map_err(|e| e.to_string())?
+    } else {
+        if let Some(p) = download_path.parent() {
+            let _ = fs::create_dir_all(p);
         }
-        emit(app, slug, "download", received, total.max(received), None);
+        File::create(&download_path).map_err(|e| e.to_string())?
+    };
+
+    // --- download loop (pausable) ---
+    emit(app, slug, "download", resume_from, record.size_hint.max(resume_from + 1), Some("Downloading…"));
+    let mut resp = server.download(slug, resume_from, is_tar)?;
+    let total = if is_tar {
+        record.size_hint.max(resume_from + 1)
+    } else {
+        resp.content_length()
+            .map(|c| resume_from + c)
+            .unwrap_or(record.size_hint.max(resume_from + 1))
+    };
+
+    let mut received = resume_from;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut last_emit = Instant::now();
+    let mut last_save = Instant::now();
+    loop {
+        match control.load(Ordering::SeqCst) {
+            PAUSE => {
+                let _ = file.flush();
+                record.bytes = received;
+                record.paused = true;
+                config::save_download(app, &record);
+                emit(app, slug, "paused", received, total, None);
+                return Ok(InstallStatus {
+                    slug: slug.to_string(),
+                    status: "paused".to_string(),
+                    install_path: None,
+                    exe: None,
+                });
+            }
+            CANCEL => {
+                drop(file);
+                let _ = fs::remove_file(&download_path);
+                config::remove_download(app, slug);
+                emit(app, slug, "cancelled", received, total, None);
+                return Ok(InstallStatus {
+                    slug: slug.to_string(),
+                    status: "cancelled".to_string(),
+                    install_path: None,
+                    exe: None,
+                });
+            }
+            _ => {}
+        }
+        let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        received += n as u64;
+        if last_emit.elapsed() > Duration::from_millis(150) {
+            emit(app, slug, "download", received, total.max(received), None);
+            last_emit = Instant::now();
+        }
+        if last_save.elapsed() > Duration::from_secs(3) {
+            record.bytes = received;
+            config::save_download(app, &record);
+            last_save = Instant::now();
+        }
     }
+    let _ = file.flush();
+    drop(file);
+    emit(app, slug, "download", received, total.max(received), None);
 
     // --- extract / place / run installer ---
+    finalize(app, slug, &record, &dest, is_tar, &download_path)?;
+
+    let exe = find_exe(&dest, record.exe_hint.as_deref());
+    let mut state = config::load_state(app);
+    state.insert(
+        slug.to_string(),
+        InstallEntry {
+            title: record.title.clone(),
+            version: record.version.clone(),
+            path: dest.to_string_lossy().to_string(),
+            exe: exe.clone(),
+            setup_type: record.setup_type.clone(),
+            hypervisor: record.hypervisor,
+        },
+    );
+    config::save_state(app, &state)?;
+    report_installed(server, cfg, &state);
+    config::remove_download(app, slug);
+
+    emit(app, slug, "done", total, total, None);
+    Ok(InstallStatus {
+        slug: slug.to_string(),
+        status: "installed".to_string(),
+        install_path: Some(dest.to_string_lossy().to_string()),
+        exe,
+    })
+}
+
+fn finalize(
+    app: &AppHandle,
+    slug: &str,
+    record: &DownloadRecord,
+    dest: &Path,
+    is_tar: bool,
+    download_path: &Path,
+) -> Result<(), String> {
     if is_tar {
         emit(app, slug, "extract", 0, 1, Some("Extracting…"));
-        extract_tar(app, slug, &download_path, &dest)?;
-        let _ = fs::remove_file(&download_path);
-        if let Some(rel) = &payload_path {
+        extract_tar(app, slug, download_path, dest)?;
+        let _ = fs::remove_file(download_path);
+        if let Some(rel) = &record.payload_path {
             let payload = dest.join(rel.replace('/', "\\"));
-            if setup_type == "iso" && payload.exists() {
+            if record.setup_type == "iso" && payload.exists() {
                 emit(app, slug, "install", 0, 0, Some("Running disc setup…"));
                 launch::run_installer_from_iso(&payload)?;
-            } else if setup_type == "installer" && payload.exists() {
+            } else if record.setup_type == "installer" && payload.exists() {
                 emit(app, slug, "install", 0, 0, Some("Running installer…"));
-                let dir = payload.parent().unwrap_or(&dest).to_path_buf();
+                let dir = payload.parent().unwrap_or(dest).to_path_buf();
                 launch::run_and_wait(&payload, &dir, false)?;
             }
         }
@@ -119,44 +303,21 @@ pub fn install(
         match ext.as_str() {
             "zip" => {
                 emit(app, slug, "extract", 0, 1, Some("Extracting…"));
-                extract_zip(app, slug, &download_path, &dest)?;
-                let _ = fs::remove_file(&download_path);
+                extract_zip(app, slug, download_path, dest)?;
+                let _ = fs::remove_file(download_path);
             }
             "iso" => {
                 emit(app, slug, "install", 0, 0, Some("Running disc setup…"));
-                launch::run_installer_from_iso(&download_path)?;
+                launch::run_installer_from_iso(download_path)?;
             }
             "exe" | "msi" => {
                 emit(app, slug, "install", 0, 0, Some("Running installer…"));
-                launch::run_and_wait(&download_path, &dest, false)?;
+                launch::run_and_wait(download_path, dest, false)?;
             }
             _ => {}
         }
     }
-
-    let exe = find_exe(&dest, exe_hint.as_deref());
-
-    let mut state = config::load_state(app);
-    state.insert(
-        slug.to_string(),
-        InstallEntry {
-            title,
-            version,
-            path: dest.to_string_lossy().to_string(),
-            exe: exe.clone(),
-            setup_type,
-            hypervisor,
-        },
-    );
-    config::save_state(app, &state)?;
-    report_installed(server, cfg, &state);
-
-    emit(app, slug, "done", total, total, None);
-    Ok(InstallResult {
-        slug: slug.to_string(),
-        install_path: dest.to_string_lossy().to_string(),
-        exe,
-    })
+    Ok(())
 }
 
 /// A Read wrapper that reports how far through the archive we are (throttled).

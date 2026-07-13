@@ -53,7 +53,9 @@ def _iter_tar(root: Path):
         try:
             tar = tarfile.open(fileobj=_QWriter(), mode="w|", bufsize=1024 * 1024)
             for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [d for d in dirnames if d.lower() not in _SKIP_DIRS]
+                # Deterministic order (both dirs and files) so a resumed download
+                # produces byte-identical output and can continue from an offset.
+                dirnames[:] = sorted(d for d in dirnames if d.lower() not in _SKIP_DIRS)
                 for name in sorted(filenames):
                     full = Path(dirpath) / name
                     arcname = full.relative_to(root).as_posix()
@@ -82,6 +84,23 @@ def _iter_tar(root: Path):
         if isinstance(item, Exception):
             raise item
         yield item
+
+
+def _skip_prefix(gen, skip: int):
+    """Drop the first ``skip`` bytes of a byte generator (for resuming a tar).
+
+    The tar is deterministic, so a client that already has ``skip`` bytes can
+    ask the server to regenerate and continue from there without re-sending them.
+    """
+    remaining = skip
+    for chunk in gen:
+        if remaining > 0:
+            if len(chunk) <= remaining:
+                remaining -= len(chunk)
+                continue
+            chunk = chunk[remaining:]
+            remaining = 0
+        yield chunk
 
 
 def _ranged_file(path: Path, range_header: str | None):
@@ -129,10 +148,20 @@ def download(
     request: Request,
     db: Session = Depends(get_db),
     range_header: str | None = Header(default=None, alias="Range"),
+    skip: int = 0,
 ) -> StreamingResponse | FileResponse:
     game = _game_or_404(db, slug)
     src = Path(game.path)
     if src.is_dir():
-        headers = {"Content-Disposition": f'attachment; filename="{game.slug}.tar"'}
-        return StreamingResponse(_iter_tar(src), media_type="application/x-tar", headers=headers)
+        # Folder games stream a deterministic tar; `skip` lets a paused download
+        # resume by dropping the bytes the client already has (loose files below
+        # use HTTP Range instead).
+        gen = _iter_tar(src)
+        if skip > 0:
+            gen = _skip_prefix(gen, skip)
+        headers = {
+            "Content-Disposition": f'attachment; filename="{game.slug}.tar"',
+            "Accept-Ranges": "none",
+        }
+        return StreamingResponse(gen, media_type="application/x-tar", headers=headers)
     return _ranged_file(src, range_header)

@@ -50,15 +50,23 @@ export interface Session {
   connected: boolean;
 }
 
-export interface InstallResult {
+export interface InstallStatus {
   slug: string;
-  installPath: string;
+  status: "installed" | "paused" | "cancelled";
+  installPath: string | null;
   exe: string | null;
+}
+
+export interface PausedDownload {
+  slug: string;
+  title: string;
+  bytes: number;
+  total: number;
 }
 
 export interface InstallProgress {
   slug: string;
-  phase: "download" | "extract" | "install" | "done" | "error";
+  phase: "download" | "extract" | "install" | "done" | "error" | "paused" | "cancelled";
   received: number;
   total: number;
   message: string | null;
@@ -84,7 +92,11 @@ export const gameDetail = (slug: string) => invoke<GameDetail>("game_detail", { 
 export const coverDataUrl = (slug: string) => invoke<string | null>("cover_data_url", { slug });
 
 // --- actions ---
-export const install = (slug: string) => invoke<InstallResult>("install", { slug });
+export const install = (slug: string) => invoke<InstallStatus>("install", { slug });
+export const resumeInstall = (slug: string) => invoke<InstallStatus>("resume_install", { slug });
+export const pauseInstall = (slug: string) => invoke<void>("pause_install", { slug });
+export const cancelInstall = (slug: string) => invoke<void>("cancel_install", { slug });
+export const pausedDownloads = () => invoke<PausedDownload[]>("paused_downloads");
 export const play = (slug: string) => invoke<PlayResult>("play", { slug });
 export const uninstall = (slug: string) => invoke<void>("uninstall", { slug });
 export const openInstallDir = (slug: string) => invoke<void>("open_install_dir", { slug });

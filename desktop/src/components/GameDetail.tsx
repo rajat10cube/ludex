@@ -4,6 +4,7 @@ import {
   Download,
   FolderOpen,
   Loader2,
+  Pause,
   Play,
   ShieldAlert,
   Star,
@@ -14,7 +15,7 @@ import {
 import { gameDetail, openInstallDir, play, uninstall } from "@/api";
 import { useCover } from "@/components/GameCard";
 import { installPercent, phaseLabel, useInstalls, type InstallState } from "@/installs";
-import { cn, formatBytes, formatPlaytime } from "@/lib/utils";
+import { cn, formatBytes, formatEta, formatPlaytime, formatSpeed } from "@/lib/utils";
 
 const SETUP_HELP: Record<string, string> = {
   portable: "Portable build — extracted and run directly.",
@@ -30,9 +31,10 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
   const { data: game, isLoading } = useQuery({ queryKey: ["game", slug], queryFn: () => gameDetail(slug) });
   const { data: cover } = useCover(slug, game?.hasCover ?? false);
 
-  const { installs, startInstall } = useInstalls();
+  const { installs, startInstall, resume, pause, cancel } = useInstalls();
   const st = installs[slug];
   const installing = st?.status === "active";
+  const paused = st?.status === "paused";
 
   const [busy, setBusy] = useState<null | "play" | "uninstall">(null);
   const [error, setError] = useState<string | null>(null);
@@ -146,7 +148,37 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
                 )}
 
                 {installing ? (
-                  <InstallProgressBar p={st} />
+                  <div className="mt-4">
+                    <InstallProgressBar p={st} />
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        className="btn-ghost"
+                        onClick={() => pause(slug)}
+                        disabled={st.phase !== "download"}
+                        title={st.phase !== "download" ? "Can only pause while downloading" : "Pause"}
+                      >
+                        <Pause className="h-4 w-4" /> Pause
+                      </button>
+                      <button className="btn-danger" onClick={() => cancel(slug)}>
+                        <X className="h-4 w-4" /> Cancel
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Runs in the background — you can close this and keep browsing.
+                    </p>
+                  </div>
+                ) : paused ? (
+                  <div className="mt-4">
+                    <PausedBar p={st} />
+                    <div className="mt-2 flex gap-2">
+                      <button className="btn-primary" onClick={() => resume(slug, game.title)}>
+                        <Play className="h-4 w-4" /> Resume
+                      </button>
+                      <button className="btn-danger" onClick={() => cancel(slug)}>
+                        <X className="h-4 w-4" /> Cancel
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <div className="mt-4 flex flex-wrap gap-2">
                     {game.installed ? (
@@ -173,11 +205,6 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
 
                 {st?.status === "error" && <p className="mt-3 text-sm text-red-400">{st.error}</p>}
                 {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
-                {installing && (
-                  <p className="mt-2 text-xs text-slate-500">
-                    Installing in the background — you can close this and keep browsing.
-                  </p>
-                )}
               </div>
             </div>
 
@@ -198,18 +225,37 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
   );
 }
 
+function PausedBar({ p }: { p: InstallState }) {
+  const pct = installPercent(p);
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs text-slate-400">
+        <span>Paused{pct != null ? ` at ${pct.toFixed(0)}%` : ""}</span>
+        <span>{formatBytes(p.received)}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-ink-700">
+        <div
+          className="h-full rounded-full bg-amber-400/70"
+          style={{ width: `${pct ?? 0}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function InstallProgressBar({ p }: { p: InstallState }) {
   const pct = installPercent(p);
-  const label =
-    p.phase === "download"
+  const downloading = p.phase === "download";
+  const label = downloading
+    ? pct != null
+      ? `Downloading ${formatBytes(p.received)} / ${formatBytes(p.total)}`
+      : `Downloading ${formatBytes(p.received)}`
+    : p.phase === "extract"
       ? pct != null
-        ? `Downloading ${formatBytes(p.received)} / ${formatBytes(p.total)}`
-        : `Downloading ${formatBytes(p.received)}`
-      : p.phase === "extract"
-        ? pct != null
-          ? `Extracting ${pct.toFixed(0)}%`
-          : "Extracting…"
-        : `${phaseLabel(p)}…`;
+        ? `Extracting ${pct.toFixed(0)}%`
+        : "Extracting…"
+      : `${phaseLabel(p)}…`;
+  const eta = downloading ? formatEta(p.total - p.received, p.speed) : "";
   return (
     <div className="mt-4">
       <div className="mb-1 flex items-center justify-between text-xs text-slate-400">
@@ -224,6 +270,12 @@ function InstallProgressBar({ p }: { p: InstallState }) {
           style={pct != null ? { width: `${pct}%` } : undefined}
         />
       </div>
+      {downloading && p.speed > 0 && (
+        <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+          <span>{formatSpeed(p.speed)}</span>
+          {eta && <span>{eta}</span>}
+        </div>
+      )}
     </div>
   );
 }

@@ -9,7 +9,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use config::AppConfig;
 use server::Server;
@@ -205,13 +205,53 @@ async fn cover_data_url(app: AppHandle, slug: String) -> Result<Option<String>, 
     .await
 }
 
-#[tauri::command]
-async fn install(app: AppHandle, slug: String) -> Result<install::InstallResult, String> {
-    blocking(move || {
-        let (srv, cfg) = build_server(&app)?;
-        install::install(&app, &srv, &cfg, &slug)
+async fn start_install(
+    app: AppHandle,
+    slug: String,
+    resume: bool,
+) -> Result<install::InstallStatus, String> {
+    // Register the control up-front so pause/cancel can target it immediately.
+    let control = app.state::<install::InstallManager>().register(&slug);
+    let app2 = app.clone();
+    let slug2 = slug.clone();
+    let res = blocking(move || {
+        let (srv, cfg) = build_server(&app2)?;
+        install::run(&app2, &srv, &cfg, &slug2, resume, control)
     })
-    .await
+    .await;
+    app.state::<install::InstallManager>().unregister(&slug);
+    res
+}
+
+#[tauri::command]
+async fn install(app: AppHandle, slug: String) -> Result<install::InstallStatus, String> {
+    start_install(app, slug, false).await
+}
+
+#[tauri::command]
+async fn resume_install(app: AppHandle, slug: String) -> Result<install::InstallStatus, String> {
+    start_install(app, slug, true).await
+}
+
+#[tauri::command]
+fn pause_install(app: AppHandle, slug: String) -> Result<(), String> {
+    app.state::<install::InstallManager>().signal(&slug, install::PAUSE);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_install(app: AppHandle, slug: String) -> Result<(), String> {
+    let signalled = app.state::<install::InstallManager>().signal(&slug, install::CANCEL);
+    if !signalled {
+        // not actively downloading (paused / interrupted) — clean up on disk
+        install::discard_paused(&app, &slug);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn paused_downloads(app: AppHandle) -> Result<Vec<install::DownloadRecordView>, String> {
+    Ok(install::list_paused(&app))
 }
 
 #[tauri::command]
@@ -304,6 +344,7 @@ fn mime_from_ext(e: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(install::InstallManager::default())
         .invoke_handler(tauri::generate_handler![
             connect,
             get_session,
@@ -314,6 +355,10 @@ pub fn run() {
             game_detail,
             cover_data_url,
             install,
+            resume_install,
+            pause_install,
+            cancel_install,
+            paused_downloads,
             play,
             uninstall,
             open_install_dir

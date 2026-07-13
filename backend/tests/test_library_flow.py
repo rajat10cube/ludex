@@ -80,6 +80,17 @@ def test_download_folder_as_tar(client, library):
     assert "game/Retail/007FirstLight.exe" in names
 
 
+def test_download_folder_tar_resumable_via_skip(client, library):
+    slug = _games(client)["007 First Light"]["slug"]
+    full = client.get(f"/api/download/{slug}", headers=AUTH).content
+    assert len(full) > 500
+    skip = 137
+    partial = client.get(f"/api/download/{slug}?skip={skip}", headers=AUTH)
+    assert partial.status_code == 200
+    # deterministic tar: the resumed stream is exactly the tail of the full one
+    assert partial.content == full[skip:]
+
+
 def test_download_loose_file_supports_range(client, library):
     slug = _games(client)["Assassins Creed Shadows"]["slug"]
     r = client.get(f"/api/download/{slug}", headers={**AUTH, "Range": "bytes=0-99"})

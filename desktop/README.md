@@ -20,6 +20,10 @@ and natively.
   close the game panel, keep browsing, and queue several at once. A **Downloads**
   panel in the header shows every in-flight install with progress, and each game
   tile shows its own progress overlay while installing.
+- **Pause / resume / cancel** — pause a download and resume later from where it left
+  off; it even survives closing the app (resumes on next launch). Loose-file games
+  resume via HTTP Range; folder games resume via a `?skip=` offset on the tar
+  endpoint (**requires the matching server version** — redeploy your Ludex server).
 - **Play** — launches the game and records playtime. Hypervisor/Denuvo games are
   launched **as administrator** (still your job to run `VBS.cmd` + reboot first).
 - **Uninstall**, open install folder, change install directory, sign out.

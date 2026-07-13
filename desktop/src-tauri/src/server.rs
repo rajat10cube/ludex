@@ -98,14 +98,21 @@ impl Server {
         Ok(Some((bytes, ct)))
     }
 
-    /// Streaming download response (caller reads it in chunks).
-    pub fn download(&self, slug: &str) -> Result<Response, String> {
-        let resp = self
+    /// Streaming download response (caller reads it in chunks). `offset` resumes:
+    /// folder games use `?skip=`, loose files use an HTTP `Range` header.
+    pub fn download(&self, slug: &str, offset: u64, is_tar: bool) -> Result<Response, String> {
+        let mut rb = self
             .http
             .get(self.url(&format!("/download/{slug}")))
-            .basic_auth(&self.user, Some(&self.pass))
-            .send()
-            .map_err(net_err)?;
+            .basic_auth(&self.user, Some(&self.pass));
+        if offset > 0 {
+            rb = if is_tar {
+                rb.query(&[("skip", offset.to_string())])
+            } else {
+                rb.header("Range", format!("bytes={offset}-"))
+            };
+        }
+        let resp = rb.send().map_err(net_err)?;
         if !resp.status().is_success() {
             return Err(status_msg(resp.status().as_u16()));
         }
