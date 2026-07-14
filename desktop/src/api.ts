@@ -48,6 +48,45 @@ export interface Session {
   username: string;
   installDir: string;
   connected: boolean;
+  isAdmin: boolean;
+}
+
+export interface LibraryFolder {
+  id: number;
+  path: string;
+  name: string;
+  gameCount: number;
+  accessible: boolean;
+}
+
+export interface ScanStatus {
+  state: "idle" | "scanning";
+  games: number;
+  artwork?: number;
+  errors: string[];
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface BrowseResult {
+  path: string;
+  parent: string | null;
+  dirs: { name: string; path: string }[];
+}
+
+export interface KeyState {
+  set: boolean;
+  source: "saved" | "env" | null;
+  hint: string | null;
+}
+
+export interface ArtworkSettings {
+  steamgriddb_key: KeyState;
+  igdb_client_id: KeyState;
+  igdb_client_secret: KeyState;
+  steamgriddb: boolean;
+  igdb: boolean;
+  enabled: boolean;
 }
 
 export interface InstallStatus {
@@ -90,6 +129,23 @@ export const pickInstallDir = () => invoke<string | null>("pick_install_dir");
 export const listGames = () => invoke<{ games: Game[] }>("list_games");
 export const gameDetail = (slug: string) => invoke<GameDetail>("game_detail", { slug });
 export const coverDataUrl = (slug: string) => invoke<string | null>("cover_data_url", { slug });
+
+// --- server library management (admin) ---
+export const listLibraries = () => invoke<LibraryFolder[]>("list_libraries");
+export const addLibrary = (path: string, name?: string) =>
+  invoke<LibraryFolder>("add_library", { path, name: name || null });
+export const removeLibrary = (id: number) => invoke<void>("remove_library", { id });
+export const scanLibraries = () => invoke<ScanStatus>("scan_libraries");
+export const scanStatus = () => invoke<ScanStatus>("scan_status");
+export const browseServer = (path: string) => invoke<BrowseResult>("browse_server", { path });
+export const artworkSettings = () => invoke<ArtworkSettings>("artwork_settings");
+export const saveArtworkSettings = (body: {
+  steamgriddb_key?: string;
+  igdb_client_id?: string;
+  igdb_client_secret?: string;
+  clear?: string[];
+}) => invoke<ArtworkSettings>("save_artwork_settings", { body });
+export const refreshArtwork = () => invoke<unknown>("refresh_artwork");
 
 // --- actions ---
 export const install = (slug: string) => invoke<InstallStatus>("install", { slug });

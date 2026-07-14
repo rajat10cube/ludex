@@ -16,6 +16,8 @@ pub struct AppConfig {
     pub username: String,
     pub install_dir: String,
     pub device: String,
+    #[serde(default)]
+    pub is_admin: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]

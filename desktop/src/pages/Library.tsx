@@ -1,30 +1,25 @@
-import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   Download,
-  FolderCog,
   Gamepad2,
+  HardDrive,
   Loader2,
   LogOut,
   Pause,
   Play,
   RefreshCw,
   Search,
+  Settings as SettingsIcon,
   X,
 } from "lucide-react";
 
-import {
-  disconnect,
-  listGames,
-  pickInstallDir,
-  setInstallDir,
-  type Game,
-  type Session,
-} from "@/api";
+import { disconnect, listGames, scanLibraries, scanStatus, type Game, type Session } from "@/api";
 import { GameCard } from "@/components/GameCard";
 import { GameDetail } from "@/components/GameDetail";
 import { installPercent, phaseLabel, useInstalls, type InstallState } from "@/installs";
+import { Settings } from "@/pages/Settings";
 import { cn, formatBytes, formatSpeed } from "@/lib/utils";
 
 type Filter = "all" | "installed" | "drm";
@@ -35,6 +30,7 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
   const [filter, setFilter] = useState<Filter>("all");
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showDownloads, setShowDownloads] = useState(false);
   const { installs, activeCount } = useInstalls();
   const downloadList = Object.values(installs);
@@ -43,6 +39,34 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
     queryKey: ["games"],
     queryFn: listGames,
   });
+
+  // Poll while a scan runs so new games appear without the user doing anything.
+  const scan = useQuery({
+    queryKey: ["scan-status"],
+    queryFn: scanStatus,
+    enabled: session.isAdmin,
+    refetchInterval: (q) => (q.state.data?.state === "scanning" ? 1500 : false),
+  });
+  const scanning = scan.data?.state === "scanning";
+
+  const rescan = useMutation({
+    mutationFn: scanLibraries,
+    onSuccess: () => {
+      setMenu(false);
+      qc.invalidateQueries({ queryKey: ["scan-status"] });
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["games"] }), 2500);
+    },
+  });
+
+  // When a scan finishes, pull the (possibly larger) library in.
+  const wasScanning = useRef(false);
+  useEffect(() => {
+    if (wasScanning.current && !scanning) {
+      qc.invalidateQueries({ queryKey: ["games"] });
+      qc.invalidateQueries({ queryKey: ["libraries"] });
+    }
+    wasScanning.current = scanning;
+  }, [scanning, qc]);
 
   const games = useMemo(() => {
     let list = data?.games ?? [];
@@ -54,15 +78,6 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
     if (filter === "drm") list = list.filter((g) => g.requiresHypervisor);
     return list;
   }, [data, search, filter]);
-
-  const changeDir = async () => {
-    const picked = await pickInstallDir();
-    if (picked) {
-      await setInstallDir(picked);
-      qc.invalidateQueries({ queryKey: ["session"] });
-    }
-    setMenu(false);
-  };
 
   return (
     <div className="flex h-full flex-col">
@@ -115,9 +130,16 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
           <button
             className="btn-ghost h-9 px-2.5"
             onClick={() => refetch()}
-            title="Refresh library"
+            title="Refresh list"
           >
             <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
+          </button>
+          <button
+            className="btn-ghost h-9 px-2.5"
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+          >
+            <SettingsIcon className="h-4 w-4" />
           </button>
           <div className="relative">
             <button className="btn-ghost h-9" onClick={() => setMenu((m) => !m)}>
@@ -132,11 +154,24 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
                   <div className="truncate">Server: {session.server}</div>
                   <div className="mt-0.5 truncate">Games: {session.installDir}</div>
                 </div>
+                {session.isAdmin && (
+                  <button
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-slate-200 hover:bg-ink-800 disabled:opacity-50"
+                    onClick={() => rescan.mutate()}
+                    disabled={scanning}
+                  >
+                    <HardDrive className="h-4 w-4" />
+                    {scanning ? "Scanning library…" : "Scan library for new games"}
+                  </button>
+                )}
                 <button
                   className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-slate-200 hover:bg-ink-800"
-                  onClick={changeDir}
+                  onClick={() => {
+                    setMenu(false);
+                    setShowSettings(true);
+                  }}
                 >
-                  <FolderCog className="h-4 w-4" /> Change install folder
+                  <SettingsIcon className="h-4 w-4" /> Settings
                 </button>
                 <button
                   className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-red-300 hover:bg-ink-800"
@@ -153,6 +188,13 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
         </div>
       </header>
 
+      {scanning && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-accent/20 bg-accent-soft px-4 py-1.5 text-xs text-accent">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Scanning your libraries — new games will appear here automatically.
+        </div>
+      )}
+
       <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
         {isLoading ? (
           <Centered>
@@ -168,7 +210,18 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
             </div>
           </Centered>
         ) : games.length === 0 ? (
-          <Centered>{(data?.games?.length ?? 0) > 0 ? "No games match." : "Library is empty."}</Centered>
+          <Centered>
+            {(data?.games?.length ?? 0) > 0 ? (
+              "No games match."
+            ) : (
+              <div className="text-center">
+                <p>Your library is empty.</p>
+                <button className="btn-primary mt-3" onClick={() => setShowSettings(true)}>
+                  <HardDrive className="h-4 w-4" /> Add a game folder
+                </button>
+              </div>
+            )}
+          </Centered>
         ) : (
           <div className="mx-auto grid max-w-[1500px] grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {games.map((g: Game) => (
@@ -179,6 +232,13 @@ export function Library({ session, onDisconnect }: { session: Session; onDisconn
       </main>
 
       {openSlug && <GameDetail slug={openSlug} onClose={() => setOpenSlug(null)} />}
+      {showSettings && (
+        <Settings
+          session={session}
+          onClose={() => setShowSettings(false)}
+          onDisconnect={onDisconnect}
+        />
+      )}
     </div>
   );
 }

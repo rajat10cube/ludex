@@ -34,17 +34,19 @@ impl Server {
     }
 
     fn get(&self, path: &str) -> Result<Value, String> {
+        self.get_query(path, &[])
+    }
+
+    fn get_query(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, String> {
         let resp = self
             .http
             .get(self.url(path))
+            .query(query)
             .basic_auth(&self.user, Some(&self.pass))
             .timeout(Duration::from_secs(30))
             .send()
             .map_err(net_err)?;
-        if !resp.status().is_success() {
-            return Err(status_msg(resp.status().as_u16()));
-        }
-        resp.json().map_err(net_err)
+        read_json(resp)
     }
 
     pub fn post(&self, path: &str, body: Value) -> Result<Value, String> {
@@ -56,10 +58,21 @@ impl Server {
             .timeout(Duration::from_secs(30))
             .send()
             .map_err(net_err)?;
+        read_json(resp)
+    }
+
+    fn delete(&self, path: &str) -> Result<(), String> {
+        let resp = self
+            .http
+            .delete(self.url(path))
+            .basic_auth(&self.user, Some(&self.pass))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .map_err(net_err)?;
         if !resp.status().is_success() {
-            return Err(status_msg(resp.status().as_u16()));
+            return Err(api_err(resp));
         }
-        resp.json().map_err(net_err)
+        Ok(())
     }
 
     pub fn me(&self) -> Result<Value, String> {
@@ -119,6 +132,44 @@ impl Server {
         Ok(resp)
     }
 
+    // --- library management (admin) ---
+    pub fn libraries(&self) -> Result<Value, String> {
+        self.get("/libraries")
+    }
+
+    pub fn add_library(&self, path: &str, name: Option<String>) -> Result<Value, String> {
+        self.post("/libraries", json!({ "path": path, "name": name }))
+    }
+
+    pub fn delete_library(&self, id: i64) -> Result<(), String> {
+        self.delete(&format!("/libraries/{id}"))
+    }
+
+    pub fn scan(&self) -> Result<Value, String> {
+        self.post("/libraries/scan", json!({}))
+    }
+
+    pub fn scan_status(&self) -> Result<Value, String> {
+        self.get("/libraries/scan/status")
+    }
+
+    /// Browse folders *on the server* — an empty path lists the roots.
+    pub fn browse(&self, path: &str) -> Result<Value, String> {
+        self.get_query("/libraries/browse", &[("path", path)])
+    }
+
+    pub fn artwork_settings(&self) -> Result<Value, String> {
+        self.get("/settings/artwork")
+    }
+
+    pub fn save_artwork_settings(&self, body: Value) -> Result<Value, String> {
+        self.post("/settings/artwork", body)
+    }
+
+    pub fn refresh_artwork(&self) -> Result<Value, String> {
+        self.post("/libraries/artwork/refresh", json!({}))
+    }
+
     pub fn hello(&self, device: &str) {
         let _ = self.post(
             "/agent/hello",
@@ -138,6 +189,29 @@ impl Server {
     }
 }
 
+fn read_json(resp: Response) -> Result<Value, String> {
+    if !resp.status().is_success() {
+        return Err(api_err(resp));
+    }
+    // 202/204 bodies may be empty — treat that as null rather than an error.
+    let text = resp.text().map_err(net_err)?;
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| format!("Bad response from server: {e}"))
+}
+
+/// Prefer FastAPI's `detail` message ("Not a directory…") over a bare status code.
+fn api_err(resp: Response) -> String {
+    let code = resp.status().as_u16();
+    if let Ok(v) = resp.json::<Value>() {
+        if let Some(detail) = v.get("detail").and_then(|d| d.as_str()) {
+            return detail.to_string();
+        }
+    }
+    status_msg(code)
+}
+
 fn net_err<E: std::fmt::Display>(e: E) -> String {
     format!("Network error: {e}")
 }
@@ -145,8 +219,9 @@ fn net_err<E: std::fmt::Display>(e: E) -> String {
 fn status_msg(code: u16) -> String {
     match code {
         401 => "Invalid username or password".into(),
-        403 => "Access denied".into(),
+        403 => "Access denied — this needs an admin account".into(),
         404 => "Not found on server".into(),
+        409 => "Already exists".into(),
         c => format!("Server error ({c})"),
     }
 }

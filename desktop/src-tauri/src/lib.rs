@@ -21,6 +21,7 @@ struct Session {
     username: String,
     install_dir: String,
     connected: bool,
+    is_admin: bool,
 }
 
 #[derive(Serialize)]
@@ -74,11 +75,12 @@ async fn connect(
     blocking(move || {
         let base = server.trim_end_matches('/').to_string();
         let srv = Server::new(&base, &username, &password);
-        srv.me()?; // verify credentials before saving anything
+        let me = srv.me()?; // verify credentials before saving anything
 
         let mut cfg = config::load_config(&app);
         cfg.server = base.clone();
         cfg.username = username.clone();
+        cfg.is_admin = me["isAdmin"].as_bool().unwrap_or(false);
         if cfg.install_dir.is_empty() {
             cfg.install_dir = default_install_dir();
         }
@@ -95,24 +97,45 @@ async fn connect(
             username: cfg.username,
             install_dir: cfg.install_dir,
             connected: true,
+            is_admin: cfg.is_admin,
         })
     })
     .await
 }
 
 #[tauri::command]
-fn get_session(app: AppHandle) -> Result<Option<Session>, String> {
-    let cfg = config::load_config(&app);
-    if cfg.server.is_empty() || cfg.username.is_empty() {
-        return Ok(None);
-    }
-    let connected = config::get_password(&account(&cfg.username, &cfg.server)).is_some();
-    Ok(Some(Session {
-        server: cfg.server,
-        username: cfg.username,
-        install_dir: cfg.install_dir,
-        connected,
-    }))
+async fn get_session(app: AppHandle) -> Result<Option<Session>, String> {
+    blocking(move || {
+        let mut cfg = config::load_config(&app);
+        if cfg.server.is_empty() || cfg.username.is_empty() {
+            return Ok(None);
+        }
+        let connected = config::get_password(&account(&cfg.username, &cfg.server)).is_some();
+
+        // Re-check admin rights against the server (they may have changed, and
+        // configs written by older builds don't have the flag at all). If the
+        // server is unreachable, fall back to whatever we last saw.
+        if connected {
+            if let Ok((srv, _)) = build_server(&app) {
+                if let Ok(me) = srv.me() {
+                    let is_admin = me["isAdmin"].as_bool().unwrap_or(false);
+                    if is_admin != cfg.is_admin {
+                        cfg.is_admin = is_admin;
+                        let _ = config::save_config(&app, &cfg);
+                    }
+                }
+            }
+        }
+
+        Ok(Some(Session {
+            server: cfg.server,
+            username: cfg.username,
+            install_dir: cfg.install_dir,
+            connected,
+            is_admin: cfg.is_admin,
+        }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -136,6 +159,7 @@ fn set_install_dir(app: AppHandle, path: String) -> Result<Session, String> {
         username: cfg.username,
         install_dir: cfg.install_dir,
         connected,
+        is_admin: cfg.is_admin,
     })
 }
 
@@ -201,6 +225,68 @@ async fn cover_data_url(app: AppHandle, slug: String) -> Result<Option<String>, 
                 Ok(Some(data_url(&ct, &bytes)))
             }
         }
+    })
+    .await
+}
+
+// --- server library management (admin) ---
+
+#[tauri::command]
+async fn list_libraries(app: AppHandle) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.libraries()).await
+}
+
+#[tauri::command]
+async fn add_library(app: AppHandle, path: String, name: Option<String>) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.add_library(&path, name)).await
+}
+
+#[tauri::command]
+async fn remove_library(app: AppHandle, id: i64) -> Result<(), String> {
+    blocking(move || build_server(&app)?.0.delete_library(id)).await
+}
+
+/// Kick off a rescan of every library folder on the server.
+#[tauri::command]
+async fn scan_libraries(app: AppHandle) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.scan()).await
+}
+
+#[tauri::command]
+async fn scan_status(app: AppHandle) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.scan_status()).await
+}
+
+/// Browse folders on the *server* (the container sees /mnt/games, not D:\).
+#[tauri::command]
+async fn browse_server(app: AppHandle, path: String) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.browse(&path)).await
+}
+
+#[tauri::command]
+async fn artwork_settings(app: AppHandle) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.artwork_settings()).await
+}
+
+#[tauri::command]
+async fn save_artwork_settings(app: AppHandle, body: Value) -> Result<Value, String> {
+    blocking(move || build_server(&app)?.0.save_artwork_settings(body)).await
+}
+
+#[tauri::command]
+async fn refresh_artwork(app: AppHandle) -> Result<Value, String> {
+    blocking(move || {
+        let (srv, _) = build_server(&app)?;
+        let res = srv.refresh_artwork()?;
+        // covers are cached on disk by slug — drop them so new art is picked up
+        if let Ok(dir) = config::covers_dir(&app) {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        Ok(res)
     })
     .await
 }
@@ -354,6 +440,15 @@ pub fn run() {
             list_games,
             game_detail,
             cover_data_url,
+            list_libraries,
+            add_library,
+            remove_library,
+            scan_libraries,
+            scan_status,
+            browse_server,
+            artwork_settings,
+            save_artwork_settings,
+            refresh_artwork,
             install,
             resume_install,
             pause_install,
