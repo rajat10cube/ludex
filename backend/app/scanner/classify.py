@@ -6,6 +6,10 @@ Real torrent repacks vary a lot. We recognise the common shapes:
   plus a ``VBS.cmd`` and a "HOW TO USE" note about disabling Driver Signature
   Enforcement. These need manual VBS/DSE steps + a reboot, so we flag them.
 * **ISO release**: the folder's real payload is a single big ``.iso`` (+ nfo/readme).
+* **RAR set**: a scene release packed as ``name.rar`` + ``name.r00 .. name.rNN`` (or
+  ``name.partNN.rar``). We can't see inside without unpacking, so we just point the
+  agent at the first volume; it extracts, then re-classifies whatever comes out
+  (usually an ISO whose setup is then run).
 * **Installer**: a ``setup.exe`` / ``*.msi`` inside the folder.
 * **Portable**: a runnable game ``.exe`` with no installer.
 """
@@ -19,6 +23,10 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 ISO_EXTS = {".iso", ".mds", ".mdf", ".nrg"}
 INSTALLER_NAMES = ("setup", "install", "autorun")
 INSTALLER_EXTS = {".exe", ".msi"}
+# Old-style split volume: foo.r00, foo.r01 … (the first volume is foo.rar).
+_RAR_PART_RE = re.compile(r"\.r\d{2,3}$", re.IGNORECASE)
+# New-style split volume: foo.part01.rar, foo.part2.rar …
+_RAR_PARTNN_RE = re.compile(r"\.part\d+\.rar$", re.IGNORECASE)
 NOTE_NAMES = (
     "how to use", "install tutorial", "readme", "read me", "instructions",
     "important", "how_to_install",
@@ -94,6 +102,53 @@ def find_exe_hint(root: Path, max_depth: int) -> str | None:
     return best[1] if best else None
 
 
+def _rar_base(name: str) -> str | None:
+    """The shared stem of a split-RAR volume, or None if `name` isn't one.
+
+    ``foo.rar`` -> ``foo``; ``foo.r07`` -> ``foo``; ``foo.part03.rar`` -> ``foo``.
+    """
+    low = name.lower()
+    if _RAR_PARTNN_RE.search(low):
+        return re.sub(r"\.part\d+\.rar$", "", name, flags=re.IGNORECASE)
+    if low.endswith(".rar"):
+        return name[:-4]
+    if _RAR_PART_RE.search(low):
+        return name[: name.rfind(".")]
+    return None
+
+
+def find_rar_first_volume(root: Path, max_depth: int = 2) -> str | None:
+    """Relative path of the first volume of a split-RAR release, if any.
+
+    Old-style sets (``foo.rar`` + ``foo.r00`` …) start at ``foo.rar``.
+    New-style sets (``foo.partNN.rar``) start at the lowest-numbered part.
+    Picks the volume group with the most parts (the real payload, not a
+    stray single ``.rar`` like a cover pack).
+    """
+    groups: dict[str, list[Path]] = {}
+    for entry, _depth in iter_files(root, max_depth):
+        base = _rar_base(entry.name)
+        if base is not None:
+            groups.setdefault(f"{entry.parent}|{base}".lower(), []).append(entry)
+    if not groups:
+        return None
+    parts = max(groups.values(), key=len)
+    if len(parts) < 2:  # a lone .rar with no siblings — not a split set we handle
+        return None
+
+    def first_key(p: Path):
+        low = p.name.lower()
+        m = _RAR_PARTNN_RE.search(low)
+        if m:
+            num = re.search(r"part(\d+)\.rar$", low)
+            return (0, int(num.group(1)) if num else 0)
+        if low.endswith(".rar"):  # old-style first volume sorts before .r00
+            return (0, -1)
+        return (1, low)
+
+    return min(parts, key=first_key).relative_to(root).as_posix()
+
+
 def find_cover(root: Path) -> str | None:
     """A cover image at the top level (prefer names like cover/folder/boxart)."""
     try:
@@ -143,8 +198,9 @@ def detect_hypervisor(root: Path, instructions: str | None, max_depth: int = 2) 
 
 def _release_group_from(name: str) -> str | None:
     m = re.search(r"[-.](voices\d+|fitgirl|dodi|codex|plaza|empress|rune|tenoke|"
-                  r"skidrow|razor1911|elamigos|flt|goldberg|denuvowo)\b", name, re.IGNORECASE)
-    return m.group(1) if m else None
+                  r"skidrow|razor1911|elamigos|flt|goldberg|denuvowo|reloaded|"
+                  r"prophet|hoodlum)\b", name, re.IGNORECASE)
+    return m.group(1).lower() if m else None
 
 
 def classify_folder(root: Path, exe_depth: int) -> dict:
@@ -166,6 +222,16 @@ def classify_folder(root: Path, exe_depth: int) -> dict:
         return {
             "setup_type": "iso", "requires_hypervisor": hv,
             "exe_hint": None, "payload_path": iso[0].relative_to(root).as_posix(),
+            "instructions": instructions, "release_group": group,
+        }
+
+    # A split-RAR scene release: the agent extracts it, then re-classifies the
+    # output (usually an ISO whose setup is then run automatically).
+    rar_first = find_rar_first_volume(root)
+    if rar_first is not None:
+        return {
+            "setup_type": "rar", "requires_hypervisor": hv,
+            "exe_hint": None, "payload_path": rar_first,
             "instructions": instructions, "release_group": group,
         }
 

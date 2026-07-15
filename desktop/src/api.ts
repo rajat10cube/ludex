@@ -11,7 +11,8 @@ export type SetupType =
   | "portable_hypervisor"
   | "iso"
   | "installer"
-  | "archive";
+  | "archive"
+  | "rar";
 
 export interface Game {
   slug: string;
@@ -41,6 +42,9 @@ export interface GameDetail extends Game {
   exeHint: string | null;
   payloadPath: string | null;
   installedVersions: string[];
+  // A local post-install instruction (e.g. a staged crack to copy), set by the
+  // desktop core after installing — absent for games installed elsewhere.
+  installNote?: string | null;
 }
 
 export interface Session {
@@ -94,6 +98,7 @@ export interface InstallStatus {
   status: "installed" | "paused" | "cancelled";
   installPath: string | null;
   exe: string | null;
+  note?: string | null;
 }
 
 export interface PausedDownload {
@@ -156,6 +161,7 @@ export const pausedDownloads = () => invoke<PausedDownload[]>("paused_downloads"
 export const play = (slug: string) => invoke<PlayResult>("play", { slug });
 export const uninstall = (slug: string) => invoke<void>("uninstall", { slug });
 export const openInstallDir = (slug: string) => invoke<void>("open_install_dir", { slug });
+export const openCrackDir = (slug: string) => invoke<void>("open_crack_dir", { slug });
 
 export function onInstallProgress(cb: (p: InstallProgress) => void): Promise<UnlistenFn> {
   return listen<InstallProgress>("install-progress", (e) => cb(e.payload));

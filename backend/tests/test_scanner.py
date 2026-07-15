@@ -39,6 +39,13 @@ def test_discover_classifies_all_shapes(tmp_path: Path):
     assert pp["requires_hypervisor"] is False
     assert pp["exe_hint"] == "Stardew Valley.exe"
 
+    # Split-RAR scene release: agent extracts, then re-classifies the output
+    sm = games["Spider-Man Shattered Dimensions"]
+    assert sm["kind"] == "folder"
+    assert sm["setup_type"] == "rar"
+    assert sm["payload_path"] == "rld-smsd.rar"  # first volume, not a .rNN part
+    assert sm["release_group"] == "reloaded"
+
     # Loose archive + installer at the root
     ac = games["Assassins Creed Shadows"]
     assert ac["kind"] == "archive" and ac["setup_type"] == "archive"

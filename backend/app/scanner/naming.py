@@ -11,7 +11,8 @@ import re
 
 _RELEASE_TAGS = re.compile(
     r"\b(fitgirl|dodi|repack|goty|gog|codex|skidrow|plaza|empress|razor1911|elamigos|"
-    r"tenoke|rune|flt|goldberg|denuvowo|voices\d+|multi\d*|x64|x86|win64|win32|64bit|"
+    r"tenoke|rune|flt|goldberg|denuvowo|reloaded|prophet|hoodlum|razordox|voices\d+|"
+    r"multi\d*|x64|x86|win64|win32|64bit|"
     r"32bit|dlcs?([ ._-]included)?|selective|portable|setup|installer|update[ds]?|"
     r"cracked?|readnfo|rip)\b",
     re.IGNORECASE,

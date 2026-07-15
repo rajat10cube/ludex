@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ClipboardCopy,
   Download,
   FolderOpen,
   Loader2,
@@ -12,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 
-import { gameDetail, openInstallDir, play, uninstall } from "@/api";
+import { gameDetail, openCrackDir, openInstallDir, play, uninstall } from "@/api";
 import { useCover } from "@/components/GameCard";
 import { installPercent, phaseLabel, useInstalls, type InstallState } from "@/installs";
 import { cn, formatBytes, formatEta, formatPlaytime, formatSpeed } from "@/lib/utils";
@@ -24,6 +25,7 @@ const SETUP_HELP: Record<string, string> = {
   iso: "Disc image — downloaded, mounted, and its setup is run.",
   installer: "Installer — downloaded and run.",
   archive: "Archive — downloaded and extracted.",
+  rar: "Split-RAR release — Ludex unpacks it, mounts the disc image inside, and runs its setup. If it ships a crack, Ludex stages it for you to copy (it won't overwrite game files itself).",
 };
 
 export function GameDetail({ slug, onClose }: { slug: string; onClose: () => void }) {
@@ -205,6 +207,21 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
 
                 {st?.status === "error" && <p className="mt-3 text-sm text-red-400">{st.error}</p>}
                 {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+
+                {game.installed && game.installNote && (
+                  <div className="mt-4 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                    <div className="mb-1 flex items-center gap-2 font-semibold text-amber-200">
+                      <ClipboardCopy className="h-4 w-4" /> One more step
+                    </div>
+                    <p className="whitespace-pre-wrap leading-relaxed">{game.installNote}</p>
+                    <button
+                      className="btn-ghost mt-2 h-8"
+                      onClick={() => openCrackDir(slug).catch(() => {})}
+                    >
+                      <FolderOpen className="h-4 w-4" /> Open crack folder
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 

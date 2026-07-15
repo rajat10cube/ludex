@@ -28,6 +28,10 @@ pub struct InstallEntry {
     pub exe: Option<String>,
     pub setup_type: String,
     pub hypervisor: bool,
+    // A post-install instruction to surface in the UI (e.g. "copy the crack from
+    // …"), for releases whose final step Ludex won't do automatically.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 pub type InstallState = HashMap<String, InstallEntry>;

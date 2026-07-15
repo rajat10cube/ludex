@@ -47,7 +47,14 @@ def build_library(root: Path) -> Path:
     _write(pg / "Stardew Valley.exe", size=120 * 1024)
     _write(pg / "Content.xnb", size=64 * 1024)
 
-    # 5) Loose archive at the root
+    # 5) Split-RAR scene release (old-style foo.rar + foo.r00..r03)
+    rar = root / "Spider-Man.Shattered.Dimensions-RELOADED"
+    _write(rar / "rld-smsd.rar", size=64 * 1024)
+    for i in range(4):
+        _write(rar / f"rld-smsd.r{i:02d}", size=64 * 1024)
+    _write(rar / "Leeme.txt", text="Extract, mount the ISO, run setup, copy the crack.\n")
+
+    # 5b) Loose archive at the root
     _write(root / "Assassins.Creed.Shadows.zip", size=128 * 1024)
 
     # 6) Loose installer at the root

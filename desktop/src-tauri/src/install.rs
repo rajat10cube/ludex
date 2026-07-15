@@ -22,6 +22,16 @@ const JUNK_EXE: &[&str] = &[
     "touchup", "cleanup", "activate", "register",
 ];
 
+/// Disc-image extensions we know how to mount + run.
+const ISO_EXTS: &[&str] = &["iso", "mds", "mdf", "nrg"];
+/// Directory names on a scene disc that usually hold the crack to copy after setup.
+const CRACK_DIR_NAMES: &[&str] = &[
+    "crack", "crackfix", "cracked", "fix", "reloaded", "skidrow", "codex", "plaza", "prophet",
+    "hoodlum", "razor1911", "rld", "razordox", "tenoke",
+];
+/// Where a staged crack is copied inside the game's Ludex folder.
+const CRACK_STAGE_DIR: &str = "_Ludex-Crack";
+
 // download control states (shared atomic per active install)
 pub const RUN: u8 = 0;
 pub const PAUSE: u8 = 1;
@@ -71,6 +81,15 @@ pub struct InstallStatus {
     pub status: String, // "installed" | "paused" | "cancelled"
     pub install_path: Option<String>,
     pub exe: Option<String>,
+    pub note: Option<String>,
+}
+
+/// What `finalize` did with the payload, so the caller can decide whether to
+/// hunt for a launchable exe and what to tell the user afterwards.
+#[derive(Default)]
+struct Finalized {
+    ran_setup: bool,       // an installer/disc setup ran; the game lives elsewhere
+    note: Option<String>,  // a post-install instruction (e.g. staged crack)
 }
 
 #[derive(Serialize)]
@@ -154,6 +173,11 @@ pub fn run(
 
     let is_tar = record.download_kind == "tar";
     let dest = PathBuf::from(&record.dest);
+    if !resume {
+        // Fresh install: wipe any prior contents so stale files (e.g. a previous
+        // manual RAR/ISO extraction) can't confuse disc/archive detection later.
+        let _ = fs::remove_dir_all(&dest);
+    }
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     let download_path = PathBuf::from(&record.temp_path);
 
@@ -206,6 +230,7 @@ pub fn run(
                     status: "paused".to_string(),
                     install_path: None,
                     exe: None,
+                    note: None,
                 });
             }
             CANCEL => {
@@ -218,6 +243,7 @@ pub fn run(
                     status: "cancelled".to_string(),
                     install_path: None,
                     exe: None,
+                    note: None,
                 });
             }
             _ => {}
@@ -243,16 +269,25 @@ pub fn run(
     emit(app, slug, "download", received, total.max(received), None);
 
     // --- extract / place / run installer ---
-    if let Err(e) = finalize(app, slug, &record, &dest, is_tar, &download_path) {
-        // download is done but installing failed — clear the record + partial so it
-        // doesn't linger as a bogus "resumable" download; a retry starts clean.
-        config::remove_download(app, slug);
-        let _ = fs::remove_file(&download_path);
-        emit(app, slug, "error", received, total, Some(&e));
-        return Err(e);
-    }
+    let outcome = match finalize(app, slug, &record, &dest, is_tar, &download_path) {
+        Ok(o) => o,
+        Err(e) => {
+            // download is done but installing failed — clear the record + partial so
+            // it doesn't linger as a bogus "resumable" download; a retry starts clean.
+            config::remove_download(app, slug);
+            let _ = fs::remove_file(&download_path);
+            emit(app, slug, "error", received, total, Some(&e));
+            return Err(e);
+        }
+    };
 
-    let exe = find_exe(&dest, record.exe_hint.as_deref());
+    // Games installed by their own setup (disc/installer/RAR->ISO) live wherever
+    // setup put them, not under dest — so don't offer a bogus exe to launch.
+    let exe = if outcome.ran_setup {
+        None
+    } else {
+        find_exe(&dest, record.exe_hint.as_deref())
+    };
     let mut state = config::load_state(app);
     state.insert(
         slug.to_string(),
@@ -263,6 +298,7 @@ pub fn run(
             exe: exe.clone(),
             setup_type: record.setup_type.clone(),
             hypervisor: record.hypervisor,
+            note: outcome.note.clone(),
         },
     );
     config::save_state(app, &state)?;
@@ -275,6 +311,7 @@ pub fn run(
         status: "installed".to_string(),
         install_path: Some(dest.to_string_lossy().to_string()),
         exe,
+        note: outcome.note,
     })
 }
 
@@ -285,45 +322,152 @@ fn finalize(
     dest: &Path,
     is_tar: bool,
     download_path: &Path,
-) -> Result<(), String> {
+) -> Result<Finalized, String> {
     if is_tar {
         emit(app, slug, "extract", 0, 1, Some("Extracting…"));
         extract_tar(app, slug, download_path, dest)?;
         let _ = fs::remove_file(download_path);
-        if let Some(rel) = &record.payload_path {
-            let payload = dest.join(rel.replace('/', "\\"));
-            if record.setup_type == "iso" && payload.exists() {
-                emit(app, slug, "install", 0, 0, Some("Running disc setup…"));
-                launch::run_installer_from_iso(&payload)?;
-            } else if record.setup_type == "installer" && payload.exists() {
-                emit(app, slug, "install", 0, 0, Some("Running installer…"));
-                let dir = payload.parent().unwrap_or(dest).to_path_buf();
-                launch::run_and_wait(&payload, &dir, false)?;
-            }
+        return run_payload(app, slug, record, dest);
+    }
+
+    // A single downloaded file (loose, not a folder tar).
+    let ext = download_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "zip" => {
+            emit(app, slug, "extract", 0, 1, Some("Extracting…"));
+            extract_zip(app, slug, download_path, dest)?;
+            let _ = fs::remove_file(download_path);
+            run_payload(app, slug, record, dest)
         }
-    } else {
-        let ext = download_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        match ext.as_str() {
-            "zip" => {
-                emit(app, slug, "extract", 0, 1, Some("Extracting…"));
-                extract_zip(app, slug, download_path, dest)?;
-                let _ = fs::remove_file(download_path);
+        "rar" => run_payload(app, slug, record, dest),
+        e if ISO_EXTS.contains(&e) => run_iso(app, slug, download_path, dest),
+        "exe" | "msi" => {
+            emit(app, slug, "install", 0, 0, Some("Running installer…"));
+            launch::run_and_wait(download_path, dest, false)?;
+            Ok(Finalized { ran_setup: true, note: None })
+        }
+        _ => Ok(Finalized::default()),
+    }
+}
+
+/// After the payload is on disk under `dest`, drive it to a runnable state:
+/// unpack any split-RAR set, then mount+run a disc image, else run an installer.
+fn run_payload(
+    app: &AppHandle,
+    slug: &str,
+    record: &DownloadRecord,
+    dest: &Path,
+) -> Result<Finalized, String> {
+    // 1) split-RAR scene set → extract in place, then drop the volumes.
+    let rar_first = record
+        .payload_path
+        .as_ref()
+        .filter(|_| record.setup_type == "rar")
+        .map(|p| dest.join(p.replace('/', "\\")))
+        .filter(|p| p.exists())
+        .or_else(|| find_rar_first_volume(dest));
+    if let Some(first) = rar_first {
+        emit(app, slug, "extract", 0, 1, Some("Extracting RAR archive…"));
+        extract_rar(app, slug, &first, dest)?;
+        delete_rar_set(&first);
+    }
+
+    // 2) a disc image (often what the RAR held) → mount + run its setup.
+    if let Some(iso) = find_largest_iso(dest) {
+        return run_iso(app, slug, &iso, dest);
+    }
+
+    // 3) an installer in the tree → run it.
+    let installer = record
+        .payload_path
+        .as_ref()
+        .filter(|_| record.setup_type == "installer")
+        .map(|p| dest.join(p.replace('/', "\\")))
+        .filter(|p| p.exists())
+        .or_else(|| find_installer(dest));
+    if let Some(inst) = installer {
+        emit(app, slug, "install", 0, 0, Some("Running installer…"));
+        let dir = inst.parent().unwrap_or(dest).to_path_buf();
+        launch::run_and_wait(&inst, &dir, false)?;
+        return Ok(Finalized { ran_setup: true, note: None });
+    }
+
+    // Nothing to run — a portable/extracted game. Caller will find the exe.
+    Ok(Finalized::default())
+}
+
+/// Mount an ISO, run its setup, and (while still mounted) stage any crack for the
+/// user to copy — Ludex won't overwrite the installed game itself.
+fn run_iso(app: &AppHandle, slug: &str, iso: &Path, dest: &Path) -> Result<Finalized, String> {
+    emit(app, slug, "install", 0, 0, Some("Mounting disc and running setup…"));
+    let drive = launch::mount_iso(iso)?;
+    let setup_res = launch::run_setup_on_drive(&drive);
+    // detect + copy the crack out before we lose access to the mounted volume
+    let mut note = stage_crack(Path::new(&drive), dest);
+    launch::dismount_iso(iso);
+    let ran = setup_res?; // surface a setup failure only after cleanly dismounting
+
+    if !ran {
+        // A data-only disc image — nothing to run. Keep the .iso so the user can
+        // mount it themselves, and say so (append to any crack note).
+        let msg = format!(
+            "No installer was found on the disc image, so nothing was run. The disc \
+             image is kept at:\n{}\nMount it and run its setup yourself if needed.",
+            iso.display()
+        );
+        note = Some(match note {
+            Some(n) => format!("{n}\n\n{msg}"),
+            None => msg,
+        });
+    }
+    Ok(Finalized { ran_setup: true, note })
+}
+
+/// Extract a (possibly multi-volume) RAR, reporting cumulative unpacked bytes.
+/// `first_volume` is the first part; unrar follows the rest automatically.
+fn extract_rar(app: &AppHandle, slug: &str, first_volume: &Path, dest: &Path) -> Result<(), String> {
+    // Pass 1: total unpacked size for a real progress bar (headers only).
+    let total: u64 = unrar::Archive::new(first_volume)
+        .open_for_listing()
+        .map_err(|e| format!("Couldn't read the RAR: {e}"))?
+        .flatten()
+        .map(|h| h.unpacked_size)
+        .sum::<u64>()
+        .max(1);
+
+    let mut archive = unrar::Archive::new(first_volume)
+        .open_for_processing()
+        .map_err(|e| format!("Couldn't open the RAR: {e}"))?;
+    let mut done: u64 = 0;
+    let mut last = Instant::now();
+    while let Some(header) = archive.read_header().map_err(|e| e.to_string())? {
+        let entry = header.entry();
+        let is_file = entry.is_file();
+        let size = entry.unpacked_size;
+        let out = safe_join(dest, &entry.filename); // also blocks path traversal
+        archive = if is_file {
+            if let Some(parent) = out.parent() {
+                let _ = fs::create_dir_all(parent);
             }
-            "iso" => {
-                emit(app, slug, "install", 0, 0, Some("Running disc setup…"));
-                launch::run_installer_from_iso(download_path)?;
+            header
+                .extract_to(&out)
+                .map_err(|e| format!("RAR extraction failed: {e}"))?
+        } else {
+            header.skip().map_err(|e| e.to_string())?
+        };
+        if is_file {
+            done += size;
+            if last.elapsed() > Duration::from_millis(200) {
+                emit(app, slug, "extract", done.min(total), total, Some("Extracting RAR archive…"));
+                last = Instant::now();
             }
-            "exe" | "msi" => {
-                emit(app, slug, "install", 0, 0, Some("Running installer…"));
-                launch::run_and_wait(download_path, dest, false)?;
-            }
-            _ => {}
         }
     }
+    emit(app, slug, "extract", total, total, Some("Extracting RAR archive…"));
     Ok(())
 }
 
@@ -425,6 +569,183 @@ fn extract_zip(app: &AppHandle, slug: &str, archive: &Path, dest: &Path) -> Resu
     Ok(())
 }
 
+/// Files under `dir` down to `max_depth` (0 = only `dir` itself), skipping our
+/// own staging folder.
+fn walk(dir: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                if depth < max_depth && name != CRACK_STAGE_DIR {
+                    stack.push((p, depth + 1));
+                }
+            } else {
+                found.push(p);
+            }
+        }
+    }
+    found
+}
+
+/// The shared stem of a split-RAR volume, or None. Mirrors the server classifier:
+/// `foo.rar`/`foo.r07`/`foo.part03.rar` all share base `foo`.
+fn rar_base(name: &str) -> Option<String> {
+    let low = name.to_lowercase();
+    if let Some(pos) = low.rfind(".part") {
+        // ...".partNN.rar"
+        let tail = &low[pos..];
+        if tail.ends_with(".rar") && tail[5..tail.len() - 4].chars().all(|c| c.is_ascii_digit()) {
+            return Some(name[..pos].to_string());
+        }
+    }
+    if low.ends_with(".rar") {
+        return Some(name[..name.len() - 4].to_string());
+    }
+    // ".rNN" (2-3 digit) old-style continuation volume
+    if let Some(dot) = low.rfind('.') {
+        let ext = &low[dot + 1..];
+        if ext.starts_with('r') && ext.len() >= 3 && ext[1..].chars().all(|c| c.is_ascii_digit()) {
+            return Some(name[..dot].to_string());
+        }
+    }
+    None
+}
+
+/// The first volume of the largest split-RAR set under `dir`, if any.
+fn find_rar_first_volume(dir: &Path) -> Option<PathBuf> {
+    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for p in walk(dir, 2) {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if let Some(base) = rar_base(&name) {
+            let key = format!("{}|{}", p.parent().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default(), base.to_lowercase());
+            groups.entry(key).or_default().push(p);
+        }
+    }
+    let parts = groups.into_values().max_by_key(|v| v.len())?;
+    if parts.len() < 2 {
+        return None; // a lone .rar isn't a split set we auto-handle
+    }
+    // First volume: the ".rar" (old-style) or lowest ".partNN.rar" (new-style).
+    parts
+        .into_iter()
+        .min_by_key(|p| {
+            let low = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            if let Some(pos) = low.rfind(".part") {
+                let n: u32 = low[pos + 5..low.len() - 4].parse().unwrap_or(0);
+                (0u8, n)
+            } else if low.ends_with(".rar") {
+                (0u8, 0) // old-style first volume sorts before .r00
+            } else {
+                (1u8, 0)
+            }
+        })
+}
+
+/// Delete a split-RAR set (the first volume + all its sibling parts).
+fn delete_rar_set(first_volume: &Path) {
+    let (Some(dir), Some(name)) = (first_volume.parent(), first_volume.file_name()) else {
+        return;
+    };
+    let Some(base) = rar_base(&name.to_string_lossy()) else { return };
+    let base_low = base.to_lowercase();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let n = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if rar_base(&n).map(|b| b.to_lowercase()) == Some(base_low.clone()) {
+                let _ = fs::remove_file(&p);
+            }
+        }
+    }
+}
+
+/// The largest disc image under `dir` (that's the release payload).
+fn find_largest_iso(dir: &Path) -> Option<PathBuf> {
+    walk(dir, 2)
+        .into_iter()
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| ISO_EXTS.contains(&e.to_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .max_by_key(|p| fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+}
+
+/// A setup.exe / installer .msi in the tree (not the game itself).
+fn find_installer(dir: &Path) -> Option<PathBuf> {
+    walk(dir, 2).into_iter().find(|p| {
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if ext != "exe" && ext != "msi" {
+            return false;
+        }
+        let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+        stem.contains("setup") || stem.contains("install") || stem == "autorun"
+    })
+}
+
+/// Look for a crack folder on the mounted disc and copy it into the game's Ludex
+/// folder so the user can apply it. Returns the instruction to show, or None.
+/// Ludex never overwrites the installed game itself — see the DRM stance.
+fn stage_crack(drive_root: &Path, dest: &Path) -> Option<String> {
+    let crack_src = find_crack_dir(drive_root)?;
+    let staging = dest.join(CRACK_STAGE_DIR);
+    let _ = fs::remove_dir_all(&staging); // start clean on re-install
+    if copy_dir_all(&crack_src, &staging).is_err() {
+        return None;
+    }
+    Some(format!(
+        "This release needs a crack applied after the installer finishes. Ludex copied it to:\n\
+         {}\n\n\
+         When setup is done, copy everything from that folder into the folder where you \
+         installed the game, replacing files when asked. (Ludex won't overwrite game files \
+         for you.)",
+        staging.display()
+    ))
+}
+
+/// A directory on the disc whose name looks like a scene crack folder.
+fn find_crack_dir(drive_root: &Path) -> Option<PathBuf> {
+    let mut stack = vec![(drive_root.to_path_buf(), 0usize)];
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            if CRACK_DIR_NAMES.contains(&name.as_str()) {
+                return Some(p);
+            }
+            if depth < 2 {
+                stack.push((p, depth + 1));
+            }
+        }
+    }
+    None
+}
+
+/// Recursively copy `src` into `dst`.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Best-effort main-executable detection: honour the server's hint, else the
 /// largest non-junk .exe under the install dir.
 pub fn find_exe(root: &Path, hint: Option<&str>) -> Option<String> {
@@ -475,8 +796,9 @@ pub fn report_installed(server: &Server, cfg: &AppConfig, state: &InstallState) 
 
 #[cfg(test)]
 mod tests {
-    use super::safe_join;
-    use std::path::Path;
+    use super::{delete_rar_set, find_rar_first_volume, rar_base, safe_join};
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn sanitizes_windows_illegal_chars() {
@@ -495,5 +817,51 @@ mod tests {
     fn trims_trailing_dots_and_spaces() {
         let out = safe_join(Path::new("D:\\d"), Path::new("name. /ok"));
         assert_eq!(out.to_string_lossy().replace("D:\\d\\", ""), "name\\ok");
+    }
+
+    #[test]
+    fn rar_base_recognises_volume_shapes() {
+        assert_eq!(rar_base("rld-smsd.rar").as_deref(), Some("rld-smsd"));
+        assert_eq!(rar_base("rld-smsd.r00").as_deref(), Some("rld-smsd"));
+        assert_eq!(rar_base("rld-smsd.r77").as_deref(), Some("rld-smsd"));
+        assert_eq!(rar_base("game.part03.rar").as_deref(), Some("game"));
+        // not split-RAR volumes
+        assert_eq!(rar_base("setup.exe"), None);
+        assert_eq!(rar_base("readme.txt"), None);
+        assert_eq!(rar_base("cover.r"), None); // too short to be .rNN
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ludex-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn picks_first_volume_and_deletes_the_whole_set() {
+        let dir = scratch("rar");
+        fs::write(dir.join("rld-smsd.rar"), b"x").unwrap();
+        for i in 0..5 {
+            fs::write(dir.join(format!("rld-smsd.r{i:02}")), b"x").unwrap();
+        }
+        fs::write(dir.join("Leeme.txt"), b"notes").unwrap(); // must be left alone
+
+        let first = find_rar_first_volume(&dir).expect("should find the set");
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), "rld-smsd.rar");
+
+        delete_rar_set(&first);
+        assert!(!dir.join("rld-smsd.rar").exists());
+        assert!(!dir.join("rld-smsd.r03").exists());
+        assert!(dir.join("Leeme.txt").exists()); // untouched
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lone_rar_is_not_treated_as_a_split_set() {
+        let dir = scratch("lone");
+        fs::write(dir.join("extras.rar"), b"x").unwrap();
+        assert!(find_rar_first_volume(&dir).is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -194,7 +194,14 @@ async fn game_detail(app: AppHandle, slug: String) -> Result<Value, String> {
         let (srv, _) = build_server(&app)?;
         let mut g = srv.game(&slug)?;
         let state = config::load_state(&app);
-        g["installed"] = Value::Bool(state.contains_key(&slug));
+        match state.get(&slug) {
+            Some(entry) => {
+                g["installed"] = Value::Bool(true);
+                // a local post-install instruction (e.g. staged crack to copy)
+                g["installNote"] = entry.note.clone().map(Value::String).unwrap_or(Value::Null);
+            }
+            None => g["installed"] = Value::Bool(false),
+        }
         Ok(g)
     })
     .await
@@ -403,6 +410,19 @@ fn open_install_dir(app: AppHandle, slug: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the staged-crack folder for a game (the files to copy over the install).
+#[tauri::command]
+fn open_crack_dir(app: AppHandle, slug: String) -> Result<(), String> {
+    let state = config::load_state(&app);
+    let entry = state.get(&slug).ok_or("This game isn't installed")?;
+    let crack = std::path::Path::new(&entry.path).join("_Ludex-Crack");
+    if !crack.is_dir() {
+        return Err("No crack folder was staged for this game.".into());
+    }
+    launch::open_folder(&crack);
+    Ok(())
+}
+
 fn data_url(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", STANDARD.encode(bytes))
 }
@@ -456,7 +476,8 @@ pub fn run() {
             paused_downloads,
             play,
             uninstall,
-            open_install_dir
+            open_install_dir,
+            open_crack_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ludex");
