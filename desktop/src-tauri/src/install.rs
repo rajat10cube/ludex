@@ -402,28 +402,37 @@ fn run_payload(
 
 /// Mount an ISO, run its setup, and (while still mounted) stage any crack for the
 /// user to copy — Ludex won't overwrite the installed game itself.
+///
+/// A disc setup is the one interactive, finicky link in the chain, so a failure
+/// here is never fatal: the .iso and staged crack are left in place and the note
+/// tells the user exactly how to finish by hand.
 fn run_iso(app: &AppHandle, slug: &str, iso: &Path, dest: &Path) -> Result<Finalized, String> {
     emit(app, slug, "install", 0, 0, Some("Mounting disc and running setup…"));
     let drive = launch::mount_iso(iso)?;
-    let setup_res = launch::run_setup_on_drive(&drive);
-    // detect + copy the crack out before we lose access to the mounted volume
-    let mut note = stage_crack(Path::new(&drive), dest);
+    // Run setup from a writable working dir (never the read-only disc root).
+    let setup_res = launch::run_setup_on_drive(&drive, dest);
+    // Copy the crack out before we lose access to the mounted volume.
+    let crack = stage_crack(Path::new(&drive), dest);
     launch::dismount_iso(iso);
-    let ran = setup_res?; // surface a setup failure only after cleanly dismounting
 
-    if !ran {
-        // A data-only disc image — nothing to run. Keep the .iso so the user can
-        // mount it themselves, and say so (append to any crack note).
-        let msg = format!(
-            "No installer was found on the disc image, so nothing was run. The disc \
-             image is kept at:\n{}\nMount it and run its setup yourself if needed.",
+    let mut parts: Vec<String> = Vec::new();
+    match setup_res {
+        Ok(true) => {}
+        Ok(false) => parts.push(format!(
+            "No installer was found on the disc image, so nothing was run. The disc image is \
+             kept at:\n{}\nMount it and run its setup yourself if needed.",
             iso.display()
-        );
-        note = Some(match note {
-            Some(n) => format!("{n}\n\n{msg}"),
-            None => msg,
-        });
+        )),
+        Err(e) => parts.push(format!(
+            "Ludex couldn't run the disc's setup automatically ({e}). To finish: open\n{}\n\
+             (double-click to mount it), run its setup, and install the game.",
+            iso.display()
+        )),
     }
+    if let Some(c) = crack {
+        parts.push(c);
+    }
+    let note = if parts.is_empty() { None } else { Some(parts.join("\n\n")) };
     Ok(Finalized { ran_setup: true, note })
 }
 

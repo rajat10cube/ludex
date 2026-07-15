@@ -98,7 +98,11 @@ pub fn dismount_iso(iso: &Path) {
 /// elevated, blocking until it exits. Scene setups usually require admin.
 /// Returns `Ok(true)` if a setup ran, `Ok(false)` if none was found (not an
 /// error — some discs are just data), `Err` if a setup ran but failed.
-pub fn run_setup_on_drive(drive: &str) -> Result<bool, String> {
+///
+/// `workdir` must be a **writable** directory — never the read-only disc root,
+/// or InstallShield-style setups fail spuriously ("Not enough memory resources
+/// are available to process this command").
+pub fn run_setup_on_drive(drive: &str, workdir: &Path) -> Result<bool, String> {
     let root = Path::new(drive);
     let setup = fs::read_dir(root)
         .map_err(|e| format!("Couldn't read the disc: {e}"))?
@@ -112,7 +116,7 @@ pub fn run_setup_on_drive(drive: &str) -> Result<bool, String> {
             n.contains("setup") || n.contains("install") || n.contains("autorun")
         });
     match setup {
-        Some(exe) => run_and_wait(&exe, root, true).map(|_| true),
+        Some(exe) => run_and_wait(&exe, workdir, true).map(|_| true),
         None => Ok(false),
     }
 }
