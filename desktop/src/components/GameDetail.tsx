@@ -5,6 +5,7 @@ import {
   Download,
   FolderOpen,
   Loader2,
+  Locate,
   Pause,
   Play,
   ShieldAlert,
@@ -13,7 +14,15 @@ import {
   X,
 } from "lucide-react";
 
-import { gameDetail, openCrackDir, openInstallDir, play, uninstall } from "@/api";
+import {
+  gameDetail,
+  openCrackDir,
+  openInstallDir,
+  pickGameExe,
+  play,
+  setGameExe,
+  uninstall,
+} from "@/api";
 import { useCover } from "@/components/GameCard";
 import { installPercent, phaseLabel, useInstalls, type InstallState } from "@/installs";
 import { cn, formatBytes, formatEta, formatPlaytime, formatSpeed } from "@/lib/utils";
@@ -38,7 +47,7 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
   const installing = st?.status === "active";
   const paused = st?.status === "paused";
 
-  const [busy, setBusy] = useState<null | "play" | "uninstall">(null);
+  const [busy, setBusy] = useState<null | "play" | "uninstall" | "exe">(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,6 +82,21 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
       refresh();
     } catch (e) {
       setError(typeof e === "string" ? e : "Uninstall failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const chooseExe = async () => {
+    setError(null);
+    const picked = await pickGameExe();
+    if (!picked) return;
+    setBusy("exe");
+    try {
+      await setGameExe(slug, picked);
+      refresh();
+    } catch (e) {
+      setError(typeof e === "string" ? e : "Couldn't set the game file");
     } finally {
       setBusy(null);
     }
@@ -189,6 +213,19 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
                           {busy === "play" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                           {busy === "play" ? "Running…" : "Play"}
                         </button>
+                        <button
+                          className={game.exePath ? "btn-ghost" : "btn-primary"}
+                          onClick={chooseExe}
+                          disabled={!!busy}
+                          title="Point Play at the game's .exe"
+                        >
+                          {busy === "exe" ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Locate className="h-4 w-4" />
+                          )}
+                          {game.exePath ? "Change game file" : "Set game file"}
+                        </button>
                         <button className="btn-ghost" onClick={() => openInstallDir(slug)} disabled={!!busy}>
                           <FolderOpen className="h-4 w-4" /> Files
                         </button>
@@ -196,6 +233,18 @@ export function GameDetail({ slug, onClose }: { slug: string; onClose: () => voi
                           {busy === "uninstall" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                           Uninstall
                         </button>
+                        {!game.exePath && (
+                          <p className="w-full text-xs text-slate-400">
+                            Play needs the game's program. If you ran the disc/installer setup
+                            yourself, click <span className="text-slate-200">Set game file</span> and
+                            pick the installed game's <span className="font-mono">.exe</span>.
+                          </p>
+                        )}
+                        {game.exePath && (
+                          <p className="w-full truncate text-[11px] text-slate-500" title={game.exePath}>
+                            Launches: {game.exePath}
+                          </p>
+                        )}
                       </>
                     ) : (
                       <button className="btn-primary" onClick={() => startInstall(slug, game.title)}>

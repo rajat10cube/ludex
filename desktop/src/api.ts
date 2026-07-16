@@ -45,6 +45,9 @@ export interface GameDetail extends Game {
   // A local post-install instruction (e.g. a staged crack to copy), set by the
   // desktop core after installing — absent for games installed elsewhere.
   installNote?: string | null;
+  // The launch target Play uses; null for setup-installed games until the user
+  // points Ludex at the real .exe.
+  exePath?: string | null;
 }
 
 export interface Session {
@@ -129,6 +132,9 @@ export const getSession = () => invoke<Session | null>("get_session");
 export const disconnect = () => invoke<void>("disconnect");
 export const setInstallDir = (path: string) => invoke<Session>("set_install_dir", { path });
 export const pickInstallDir = () => invoke<string | null>("pick_install_dir");
+export const pickGameExe = () => invoke<string | null>("pick_game_exe");
+export const setGameExe = (slug: string, path: string) =>
+  invoke<void>("set_game_exe", { slug, path });
 
 // --- library ---
 export const listGames = () => invoke<{ games: Game[] }>("list_games");

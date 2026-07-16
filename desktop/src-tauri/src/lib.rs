@@ -170,6 +170,49 @@ fn pick_install_dir(app: AppHandle) -> Result<Option<String>, String> {
     Ok(picked.map(|p| p.to_string()))
 }
 
+/// Open a file picker for the user to point Ludex at a game's real executable
+/// (used after a disc/installer game installs itself somewhere Ludex can't guess).
+#[tauri::command]
+fn pick_game_exe(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut dlg = app.dialog().file().add_filter("Programs", &["exe"]);
+    // Start where most installers land, if it exists.
+    for guess in ["C:\\Program Files (x86)", "C:\\Program Files"] {
+        if std::path::Path::new(guess).is_dir() {
+            dlg = dlg.set_directory(guess);
+            break;
+        }
+    }
+    Ok(dlg.blocking_pick_file().map(|p| p.to_string()))
+}
+
+/// Record the launch target for an installed game, so Play runs it directly.
+#[tauri::command]
+async fn set_game_exe(app: AppHandle, slug: String, path: String) -> Result<(), String> {
+    blocking(move || {
+        let p = std::path::Path::new(&path);
+        if !p.is_file() {
+            return Err("That file doesn't exist.".into());
+        }
+        let is_exe = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false);
+        if !is_exe {
+            return Err("Please choose the game's .exe file.".into());
+        }
+        let mut state = config::load_state(&app);
+        let entry = state.get_mut(&slug).ok_or("This game isn't installed in Ludex.")?;
+        entry.exe = Some(path.clone());
+        // The manual setup is finished — drop the "finish it yourself" reminder.
+        entry.note = None;
+        config::save_state(&app, &state)?;
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn list_games(app: AppHandle) -> Result<Value, String> {
     blocking(move || {
@@ -199,6 +242,9 @@ async fn game_detail(app: AppHandle, slug: String) -> Result<Value, String> {
                 g["installed"] = Value::Bool(true);
                 // a local post-install instruction (e.g. staged crack to copy)
                 g["installNote"] = entry.note.clone().map(Value::String).unwrap_or(Value::Null);
+                // the launch target Play uses — null for setup-installed games until
+                // the user points Ludex at the real .exe.
+                g["exePath"] = entry.exe.clone().map(Value::String).unwrap_or(Value::Null);
             }
             None => g["installed"] = Value::Bool(false),
         }
@@ -457,6 +503,8 @@ pub fn run() {
             disconnect,
             set_install_dir,
             pick_install_dir,
+            pick_game_exe,
+            set_game_exe,
             list_games,
             game_detail,
             cover_data_url,
