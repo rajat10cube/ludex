@@ -37,6 +37,10 @@ pub const RUN: u8 = 0;
 pub const PAUSE: u8 = 1;
 pub const CANCEL: u8 = 2;
 
+/// How many times a dropped download stream is reconnected (resuming from the
+/// bytes already on disk) before giving up. Reset by any forward progress.
+const MAX_STREAM_RETRIES: u32 = 5;
+
 /// Tracks the control flag of each active download so pause/cancel can reach it.
 #[derive(Default)]
 pub struct InstallManager {
@@ -217,6 +221,7 @@ pub fn run(
     let mut buf = vec![0u8; 256 * 1024];
     let mut last_emit = Instant::now();
     let mut last_save = Instant::now();
+    let mut retries: u32 = 0;
     loop {
         match control.load(Ordering::SeqCst) {
             PAUSE => {
@@ -248,7 +253,41 @@ pub fn run(
             }
             _ => {}
         }
-        let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = match resp.read(&mut buf) {
+            Ok(n) => {
+                retries = 0; // any progress refills the retry budget
+                n
+            }
+            // The stream broke (flaky link, server hiccup). We already support
+            // resuming, so reconnect from where we are instead of losing the
+            // whole download.
+            Err(e) => {
+                if retries >= MAX_STREAM_RETRIES {
+                    return Err(format!(
+                        "Download kept dropping (gave up after {MAX_STREAM_RETRIES} retries at \
+                         {received} bytes): {e}"
+                    ));
+                }
+                retries += 1;
+                let _ = file.flush();
+                record.bytes = received;
+                config::save_download(app, &record);
+                emit(
+                    app,
+                    slug,
+                    "download",
+                    received,
+                    total.max(received),
+                    Some(&format!("Connection dropped — reconnecting ({retries}/{MAX_STREAM_RETRIES})…")),
+                );
+                std::thread::sleep(Duration::from_secs(2 * retries as u64));
+                if control.load(Ordering::SeqCst) != RUN {
+                    continue; // let the pause/cancel arms above handle it
+                }
+                resp = server.download(slug, received, is_tar)?;
+                continue;
+            }
+        };
         if n == 0 {
             break;
         }

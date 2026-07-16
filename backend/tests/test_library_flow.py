@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -89,6 +90,34 @@ def test_download_folder_tar_resumable_via_skip(client, library):
     assert partial.status_code == 200
     # deterministic tar: the resumed stream is exactly the tail of the full one
     assert partial.content == full[skip:]
+
+
+def test_tar_never_silently_corrupts_when_a_file_is_short(client, library, monkeypatch):
+    """A file shorter than its stat size must fail loudly, not misalign the tar.
+
+    Swallowing the error mid-entry used to leave the header + partial data in the
+    stream and write the next header straight after it, so every later entry was
+    misaligned and the client blew up with "numeric field did not have utf-8 text".
+    """
+    import tarfile as _tarfile
+
+    from app.routers import download as dl
+
+    real_addfile = _tarfile.TarFile.addfile
+
+    def flaky_addfile(self, tarinfo, fileobj=None):
+        if tarinfo.name.endswith("007FirstLight.exe"):
+            # emit the header, then die mid-data exactly like a short read does
+            tarinfo.size += 4096
+            raise OSError("unexpected end of data")
+        return real_addfile(self, tarinfo, fileobj)
+
+    monkeypatch.setattr(_tarfile.TarFile, "addfile", flaky_addfile)
+
+    with pytest.raises(RuntimeError) as err:
+        b"".join(dl._iter_tar(Path(library) / "007.First.Light"))
+    # names the offending file instead of quietly producing a broken archive
+    assert "007FirstLight.exe" in str(err.value)
 
 
 def test_download_loose_file_supports_range(client, library):

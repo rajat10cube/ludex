@@ -59,17 +59,33 @@ def _iter_tar(root: Path):
                 for name in sorted(filenames):
                     full = Path(dirpath) / name
                     arcname = full.relative_to(root).as_posix()
+                    # Open before writing anything: a file we can't read is then
+                    # skipped cleanly, while no header is in the stream yet.
                     try:
-                        info = tar.gettarinfo(str(full), arcname=arcname)
+                        fh = open(full, "rb")
                     except OSError:
                         continue
-                    if info is None or not info.isreg():
-                        continue
-                    try:
-                        with open(full, "rb") as fh:
+                    with fh:
+                        try:
+                            # stat the open fd, so the size we declare is the one
+                            # we're about to read
+                            info = tar.gettarinfo(str(full), arcname=arcname, fileobj=fh)
+                        except Exception:
+                            continue
+                        if info is None or not info.isreg():
+                            continue
+                        try:
                             tar.addfile(info, fh)
-                    except OSError:
-                        continue
+                        except Exception as exc:
+                            # addfile has already emitted this entry's header (and
+                            # maybe part of its data). Skipping now would misalign
+                            # every following entry and hand the client a corrupt
+                            # archive, so fail loudly and name the file instead.
+                            # Usual cause: the file is shorter than its stat size
+                            # (e.g. still being written by a torrent client).
+                            raise RuntimeError(
+                                f"Couldn't read {arcname} while building the archive: {exc}"
+                            ) from exc
             tar.close()
         except Exception as exc:  # surface to the consumer
             q.put(exc)
