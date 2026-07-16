@@ -40,11 +40,18 @@ pub fn run_and_wait(exe: &Path, workdir: &Path, elevated: bool) -> Result<u64, S
     if elevated {
         run_elevated_wait(exe, workdir)?;
     } else {
-        let mut child = Command::new(exe)
-            .current_dir(workdir)
-            .spawn()
-            .map_err(|e| format!("Could not launch the game: {e}"))?;
-        child.wait().map_err(|e| e.to_string())?;
+        match Command::new(exe).current_dir(workdir).spawn() {
+            Ok(mut child) => {
+                child.wait().map_err(|e| e.to_string())?;
+            }
+            // ERROR_ELEVATION_REQUIRED: the exe's manifest demands admin, and
+            // CreateProcess can't elevate. Retry via ShellExecuteEx, which can
+            // (and shows the UAC prompt) — plenty of games need this.
+            Err(e) if e.raw_os_error() == Some(740) => {
+                run_elevated_wait(exe, workdir)?;
+            }
+            Err(e) => return Err(format!("Could not launch the game: {e}")),
+        }
     }
     Ok(start.elapsed().as_secs())
 }
