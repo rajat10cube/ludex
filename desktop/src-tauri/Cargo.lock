@@ -2232,6 +2232,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "unrar",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

@@ -31,32 +31,14 @@ fn powershell(script: &str) -> Result<String, String> {
 }
 
 /// Launch an executable and block until it exits; returns seconds elapsed.
-/// `elevated` launches with a UAC prompt (needed by hypervisor/Denuvo releases)
-/// via a hidden PowerShell `Start-Process -Verb RunAs -Wait`.
+/// `elevated` requests a UAC prompt (needed by disc setups and hypervisor/Denuvo
+/// releases) via the real `ShellExecuteEx("runas")` API — NOT a hidden PowerShell,
+/// which Windows refuses to elevate from a windowless background context ("Not
+/// enough memory resources are available to process this command", error 1450).
 pub fn run_and_wait(exe: &Path, workdir: &Path, elevated: bool) -> Result<u64, String> {
     let start = Instant::now();
     if elevated {
-        let exe_s = exe.to_string_lossy().replace('\'', "''");
-        let dir_s = workdir.to_string_lossy().replace('\'', "''");
-        let script = format!(
-            "Start-Process -FilePath '{exe_s}' -WorkingDirectory '{dir_s}' -Verb RunAs -Wait"
-        );
-        let status = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-WindowStyle",
-                "Hidden",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &script,
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .map_err(|e| format!("Could not launch the game: {e}"))?;
-        if !status.success() {
-            return Err("Launch was cancelled or the UAC prompt was denied.".into());
-        }
+        run_elevated_wait(exe, workdir)?;
     } else {
         let mut child = Command::new(exe)
             .current_dir(workdir)
@@ -65,6 +47,52 @@ pub fn run_and_wait(exe: &Path, workdir: &Path, elevated: bool) -> Result<u64, S
         child.wait().map_err(|e| e.to_string())?;
     }
     Ok(start.elapsed().as_secs())
+}
+
+/// Launch `exe` elevated (UAC) via ShellExecuteEx and wait for it to exit.
+/// Runs from Ludex's own interactive process so the consent UI shows normally.
+fn run_elevated_wait(exe: &Path, workdir: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    }
+    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let file = wide(exe);
+    let dir = wide(workdir);
+
+    // SEE_MASK_FLAG_NO_UI suppresses Windows' own error dialog so we report
+    // failures ourselves; NOCLOSEPROCESS hands us the process handle to wait on.
+    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    info.lpVerb = verb.as_ptr();
+    info.lpFile = file.as_ptr();
+    info.lpDirectory = dir.as_ptr();
+    info.nShow = SW_SHOWNORMAL as i32;
+
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok == 0 {
+        let e = std::io::Error::last_os_error();
+        // ERROR_CANCELLED (1223): the user dismissed the UAC prompt.
+        if e.raw_os_error() == Some(1223) {
+            return Err("The elevation (UAC) prompt was cancelled.".into());
+        }
+        return Err(format!("Windows wouldn't launch the installer elevated: {e}"));
+    }
+    if !info.hProcess.is_null() {
+        unsafe {
+            WaitForSingleObject(info.hProcess, INFINITE);
+            CloseHandle(info.hProcess);
+        }
+    }
+    Ok(())
 }
 
 /// Mount an .iso and return its drive root (e.g. ``"E:\\"``).
